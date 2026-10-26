@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 战斗模拟器配装档案助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.0
+// @version      0.2.1
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues

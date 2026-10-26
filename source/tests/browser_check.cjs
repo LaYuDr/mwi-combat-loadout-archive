@@ -136,6 +136,7 @@ async function main(){
   await p.getByRole('heading',{name:'配装档案',exact:true}).waitFor();await p.getByRole('radio',{name:'整队',exact:true}).check();await p.getByLabel('新配置名称').fill('真实网站合成整队验收');await p.getByRole('button',{name:'保存网页当前配置',exact:true}).click();await status(p,'已保存“真实网站合成整队验收”');assert.equal((await records(p))[0].documentKind,'group');
   await p.evaluate(()=>scrollTo(0,0));await p.screenshot({path:path.join(project,'preview/native_live_site.png'),fullPage:true,animations:'disabled'});await live.close();pass('live deployed website: native solo export and targeted import, complete group roundtrip and plugin one-click save, isolated synthetic data');
  }
+ checks.push(...await require('./equipment_filter_browser.cjs').run({browser,bundle,project,live:process.env.MWI_ARCHIVE_LIVE==='1'}));
  fs.mkdirSync(path.join(project,'preview'),{recursive:true});fs.writeFileSync(path.join(project,'preview/native_browser_results.json'),JSON.stringify({date:'2026-10-26',checks,pageErrors:errors,liveSite:process.env.MWI_ARCHIVE_LIVE==='1',isolatedProfile:true,realGame:false},null,2));
  console.log(checks.length+' browser scenarios passed; owned browser closed.');
  }finally{await browser.close();}

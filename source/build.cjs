@@ -27,10 +27,12 @@ const header = `// ==UserScript==
 // @license      MIT
 // ==/UserScript==
 `;
-const modules = ["archive_core.js", "native_document.js", "archive_store.js", "native_adapter.js", "archive_app.js"];
+const modules = ["archive_core.js", "native_document.js", "archive_store.js", "native_adapter.js",
+  "equipment_catalog.js", "equipment_filter.js", "equipment_filter_ui.js", "archive_app.js"];
 const body = modules.map(name => {
   let source = read(name);
   if (name === "archive_app.js") source = source.replace('"__ARCHIVE_CSS__"', () => JSON.stringify(css));
+  if (name === "equipment_filter_ui.js") source = source.replace('"__EQUIPMENT_FILTER_CSS__"', () => JSON.stringify(read("equipment_filter.css")));
   return `// ---- ${name} ----\n${source}`;
 }).join("\n");
 const runtime = "// MWI_COMBAT_LOADOUT_ARCHIVE_RUNTIME\n" + body;
