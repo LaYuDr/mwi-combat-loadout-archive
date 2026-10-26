@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "artifactType": "tampermonkey-userscript",
+  "policy": "append-only",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "path": "releases/v0.1/mwi_combat_loadout_archive-v0.1.0.user.js",
+      "sizeBytes": 45738,
+      "sha256": "953be1c5f5f2a1b17726cb870941420a534f2d21baaf01602ab7c2925b7ab5b7"
+    }
+  ]
+}

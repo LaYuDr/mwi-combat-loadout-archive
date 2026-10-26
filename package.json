@@ -1,0 +1,20 @@
+{
+  "name": "mwi-combat-loadout-archive",
+  "version": "0.1.0",
+  "private": true,
+  "description": "模拟器网站专用的本地配装档案助手",
+  "scripts": {
+    "dev": "node source/dev_server.cjs",
+    "build": "node source/build.cjs",
+    "test": "node --test source/tests/*.test.cjs",
+    "check": "npm test && npm run build",
+    "test:browser": "node source/tests/browser_check.cjs",
+    "release": "node source/release_current_version.mjs",
+    "release:dry-run": "node source/release_current_version.mjs --dry-run",
+    "release:verify": "node source/release_current_version.mjs --verify"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
