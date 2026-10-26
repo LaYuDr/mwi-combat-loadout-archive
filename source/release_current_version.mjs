@@ -306,7 +306,7 @@ async function verifyGreasyFork(version, attempts = 12) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const response = await fetch(`${GREASY_FORK_URL}?releaseCheck=${Date.now()}`, { cache: "no-store" });
+      const response = await fetch(`${GREASY_FORK_URL}?releaseCheck=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(20000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       lastVersion = extractUserscriptVersion(await response.text());
       console.log(`Greasy Fork 检查 ${attempt}/${attempts}：${lastVersion || "未读取到版本"}`);
@@ -354,7 +354,9 @@ async function main() {
   if (!EXPECTED_ORIGIN.test(origin)) throw new Error(`origin 不是预期仓库：${origin}`);
   if (options.verifyOnly) {
     const version = readPackageFromDisk().version;
-    await verifyGitHub(version); await verifyGreasyFork(version); return;
+    await verifyGitHub(version);
+    if (!GREASY_FORK_URL) throw new Error("GF 首发入口尚未配置，不能确认 GF 发布成功");
+    await verifyGreasyFork(version); return;
   }
   const staged = stagedPaths();
   if (staged.length) throw new Error(`开始发布前暂存区必须为空：\n${staged.map((file) => `  - ${file}`).join("\n")}`);
@@ -398,6 +400,7 @@ async function main() {
     printList("保留但不发布的文件", before.ignored);
     if (options.dryRun) return;
     verifyRemoteHead(sync.head);
+    await verifyGitHub(headVersion);
     await verifyGreasyFork(headVersion);
     return;
   }
@@ -447,8 +450,8 @@ async function main() {
   console.log("\n[6/6] 等待 Greasy Fork 自动同步");
   await verifyGitHub(releaseVersion);
   await verifyGreasyFork(releaseVersion);
-  console.log(`\n发布完成：v${releaseVersion} ${head.slice(0, 7)}`);
-  console.log(`公开安装地址：${GREASY_FORK_URL}`);
+  console.log(`\n${GREASY_FORK_URL ? "发布完成" : "GitHub 首发完成，GF 入口待配置"}：v${releaseVersion} ${head.slice(0, 7)}`);
+  if (GREASY_FORK_URL) console.log(`公开安装地址：${GREASY_FORK_URL}`);
 }
 
 if (path.resolve(process.argv[1] || "") === SCRIPT_PATH) {

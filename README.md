@@ -9,7 +9,7 @@
 
 ## 使用
 
-正式版从 Greasy Fork 或 GitHub 安装，具体地址由发布后记录提供。也可在 Tampermonkey 中导入安装包并刷新模拟器。
+正式版：[从 Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/602254)。源码：[GitHub](https://github.com/LaYuDr/mwi-combat-loadout-archive)。也可在 Tampermonkey 中导入安装包并刷新模拟器。
 右下角出现“配装档案”按钮。主站一键导入成功后自动归档；也可导入网站导出的现代单人 JSON。
 
 自动采集需要另外安装网站原有的

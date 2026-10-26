@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.1] - 2026-10-26
+
+### Changed
+
+- 接入 Greasy Fork 602254，统一正式版自动更新地址，启用 GitHub push webhook 与中文介绍同步。
+
 ## [0.1.0] - 2026-10-26
 
 ### Changed
