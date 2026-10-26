@@ -14,6 +14,36 @@ test("current payload preserves gear, zero, null slots and numeric official maps
   for (const key of ["account", "marketItemValues", "mainSiteCombat", "characterInfo"]) assert.equal(p[key], undefined);
   assert.ok(!JSON.stringify(p).includes("never-keep"));
 });
+test("native empty-object combat slots archive and restore without conflating missing, arrays or zero", async () => {
+  const raw = F.emptyCombatSlots(), p = C.sanitizePayload(raw).payload;
+  assert.deepEqual(p.actionTypeFoodSlotsMap["/action_types/combat"], {});
+  assert.deepEqual(p.actionTypeDrinkSlotsMap["/action_types/combat"], {});
+  assert.equal(p.characterItems[0].enhancementLevel, 0);
+  assert.deepEqual(C.sanitizePayload(p).payload, p);
+  const row = await C.prepare(raw);
+  assert.deepEqual(C.restoreMessage(row, "3", "empty-slots").payload, p);
+  assert.deepEqual(C.parseFile(C.exportFile([row]))[0].payload, p);
+  const absent = F.emptyCombatSlots(); delete absent.actionTypeFoodSlotsMap;
+  assert.equal(C.sanitizePayload(absent).payload.actionTypeFoodSlotsMap, undefined);
+  const emptyMap = F.emptyCombatSlots(); emptyMap.actionTypeFoodSlotsMap = {};
+  assert.deepEqual(C.sanitizePayload(emptyMap).payload.actionTypeFoodSlotsMap, {});
+  assert.notEqual((await C.prepare(emptyMap)).fingerprint, row.fingerprint);
+  const array = F.emptyCombatSlots(); array.actionTypeFoodSlotsMap["/action_types/combat"] = [];
+  assert.deepEqual(C.sanitizePayload(array).payload.actionTypeFoodSlotsMap["/action_types/combat"], []);
+  assert.notEqual((await C.prepare(array)).fingerprint, row.fingerprint);
+});
+test("empty-object native slot compatibility does not admit malformed objects or alter modern slot arrays", () => {
+  for (const field of ["actionTypeFoodSlotsMap", "actionTypeDrinkSlotsMap"]) {
+    for (const value of [{ 0: "/items/star_fruit_gummy" }, { token: "must-not-be-stored" }, null, false, 0, ""]) {
+      const raw = F.emptyCombatSlots(); raw[field]["/action_types/combat"] = value;
+      assert.throws(() => C.sanitizePayload(raw), /数据格式不兼容/);
+    }
+  }
+  for (const field of ["food", "drinks"]) {
+    const raw = F.modern(); raw.player[field] = {};
+    assert.throws(() => C.sanitizePayload(raw), /数据格式不兼容/);
+  }
+});
 test("wrapped shared profiles keep nested loadouts and authoritative empty guild map", () => {
   const p = C.sanitizePayload(F.shared()).payload;
   assert.equal(p.profile.sharableCharacter.characterId, 202);

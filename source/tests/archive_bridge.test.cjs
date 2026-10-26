@@ -15,6 +15,14 @@ test("only a matched successful ACK archives a sanitized copy, once", async () =
   const h = harness(); h.request(); assert.equal(h.saved.length, 0); h.result("unmatched"); h.result(); h.result(); await tick();
   assert.equal(h.saved.length, 1); assert.equal(h.saved[0].p.account, undefined); h.bridge.close();
 });
+test("native empty-object food/drink maps survive the successful import bridge", async () => {
+  const h = harness(); h.request("empty-combat", F.emptyCombatSlots());
+  assert.equal(h.saved.length, 0); h.result("empty-combat"); await tick();
+  assert.equal(h.saved.length, 1); assert.deepEqual(h.statuses, []);
+  assert.deepEqual(h.saved[0].p.actionTypeFoodSlotsMap["/action_types/combat"], {});
+  assert.deepEqual(h.saved[0].p.actionTypeDrinkSlotsMap["/action_types/combat"], {});
+  h.bridge.close();
+});
 test("wrong origins/sources, failed ACKs and other tool imports cannot archive", async () => {
   const h = harness();
   for (const event of [{ source: {}, origin: "https://example.test" }, { source: h.window, origin: "https://wrong.test" }])

@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         配装助手 开发加载器
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive/dev
-// @version      0.1.1
+// @version      0.2.0
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
-// @description  自动归档成功导入的战斗配装，支持命名、载入、回收站及 JSON 备份。仅在模拟器网站运行。
+// @description  保存网页当前单人或整队配置，通过原生导入导出恢复，支持命名、回收站和 JSON 备份。
 // @match        https://mwi-combatsi-mulator.pages.dev/*
 // @match        https://azhu949.github.io/MWICombatSimulator/*
 // @run-at       document-start

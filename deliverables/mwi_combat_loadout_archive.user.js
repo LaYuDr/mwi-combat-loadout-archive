@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         MWI 战斗模拟器配装档案助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.1.1
+// @version      0.2.0
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
 // @updateURL    https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.meta.js
 // @downloadURL  https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.user.js
-// @description  自动归档成功导入的战斗配装，支持命名、载入、回收站及 JSON 备份。仅在模拟器网站运行。
+// @description  保存网页当前单人或整队配置，通过原生导入导出恢复，支持命名、回收站和 JSON 备份。
 // @match        https://mwi-combatsi-mulator.pages.dev/*
 // @match        https://azhu949.github.io/MWICombatSimulator/*
 // @run-at       document-start
@@ -110,7 +110,11 @@
     return all.filter(entry => battleLocations.has((entry?.currentItem || entry?.item || entry)?.itemLocationHrid))
       .map((entry, index) => wrappedItem(entry, `${p}[${index}]`));
   };
-  const actionSlots = dict(/^\/action_types\/combat$/, slots);
+  // Native current-character payloads also use {} for an empty combat slot list.
+  // Preserve that representation; do not coerce it to [], missing, or three filled slots.
+  // Limit this compatibility to native maps: modern player food/drinks remain arrays.
+  const nativeSlots = (v, p) => plain(v) && Object.keys(v).length === 0 ? {} : slots(v, p);
+  const actionSlots = dict(/^\/action_types\/combat$/, nativeSlots);
   const currentSchema = object({ ...common, character: identity, characterItems: equippedItems,
     combatUnit: nullable(object({ combatAbilities: collection(ability) })),
     actionTypeFoodSlotsMap: actionSlots, actionTypeDrinkSlotsMap: actionSlots });
@@ -241,6 +245,102 @@
     prepare, details, restoreMessage, parseFile, exportFile });
 });
 
+// ---- native_document.js ----
+(function (root, factory) {
+  if (typeof module === "object" && module.exports) module.exports = factory(require("./archive_core.js"));
+  else root.MWINativeDocument = factory(root.MWILoadoutCore);
+})(globalThis, function (legacy) {
+  "use strict";
+  const FORMAT = "mwi-loadout-archive", MAX_BYTES = 20 * 1024 * 1024, MAX_RECORDS = 500;
+  const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+  function parse(text) {
+    if (typeof text !== "string" || new TextEncoder().encode(text).length > MAX_BYTES)
+      throw new Error("JSON 文件超过 20 MB，请拆分后重试。");
+    try {
+      return JSON.parse(text, (key, value) => {
+        if (["__proto__", "constructor", "prototype"].includes(key)) throw Error("不安全的字段");
+        return value;
+      });
+    } catch (_) { throw new Error("JSON 无法解析或包含不安全字段，请选择网页原生导出或本助手的备份。"); }
+  }
+  function inspect(text) {
+    const data = parse(text);
+    const scope = data?.version === 2 && data.format === "mwi-vue-solo" && object(data.player) ? "solo"
+      : data?.version === 2 && data.format === "mwi-vue-group" && Array.isArray(data.players) ? "group" : null;
+    if (!scope) throw new Error("不是网页原生的现代单人或整队 JSON，请在网页导入/导出中重新导出。");
+    const players = scope === "solo" ? [data.player] : data.players;
+    if (!players.length || players.length > 5) throw new Error("原生配置必须包含 1 至 5 位玩家。");
+    const ids = new Set();
+    for (const p of players) {
+      if (!object(p) || !/^[1-5]$/.test(String(p.id)) || ids.has(String(p.id)) || typeof p.name !== "string" ||
+          p.name.length > 1000 || !object(p.levels) || !object(p.equipment))
+        throw new Error("玩家槽位或配置格式不完整，未保存或导入任何数据。");
+      ids.add(String(p.id));
+    }
+    // Inspect structure, never rebuild or remove fields from a native export.
+    // This also retains future fields, explicit zero, null, empty objects and arrays.
+    let nodes = 0;
+    function check(value, depth = 0) {
+      if (++nodes > 200000 || depth > 64) throw new Error("JSON 结构过大或嵌套过深。");
+      if (value && typeof value === "object") for (const entry of Object.values(value)) check(entry, depth + 1);
+    }
+    check(data);
+    return { scope, data, players, names: players.map(p => p.name || `玩家 ${p.id}`) };
+  }
+  function validName(value) {
+    if (typeof value !== "string" || !value.trim() || value.trim().length > 120) throw new Error("名称需要 1 至 120 个字符。");
+    return value.trim();
+  }
+  async function prepare(text, options = {}) {
+    const info = inspect(text), now = options.now ?? Date.now();
+    const label = (options.name === undefined || options.name === "" ? "" : validName(options.name)) || (info.scope === "solo" ? `${info.names[0].slice(0, 110)} · 配装` : `${info.players.length} 人整队配置`);
+    return { schemaVersion: 2, id: options.id || `native:${globalThis.crypto.randomUUID()}`, kind: "named",
+      name: validName(label), documentKind: info.scope, jsonText: text, characterName: info.names.join("、"),
+      sourceFormat: info.data.format, fingerprint: await legacy.digest(info.data),
+      capturedAt: now, createdAt: now, updatedAt: now, deletedAt: null };
+  }
+  function describe(row) {
+    if (row.schemaVersion === 2 && typeof row.jsonText === "string") return { ...inspect(row.jsonText), legacy: false, text: row.jsonText };
+    const cleaned = legacy.sanitizePayload(row.payload);
+    return { legacy: true, scope: "solo", text: JSON.stringify(cleaned.payload),
+      names: [row.characterName || cleaned.characterName], players: [], data: cleaned.payload };
+  }
+  async function importFile(text) {
+    const data = parse(text);
+    let entries;
+    if (data?.format === FORMAT && data.version === 2 && Array.isArray(data.archives)) {
+      entries = data.archives;
+    } else if (data?.format === FORMAT && data.version === 1) {
+      entries = legacy.parseFile(text).map(e => ({ name: e.name, capturedAt: e.capturedAt, legacyPayload: e.payload }));
+    } else if (data?.format === "mwi-vue-solo" || data?.format === "mwi-vue-group") entries = [{ jsonText: text }];
+    else throw new Error("请选择网页原生 JSON 或配装助手备份；游戏原始资料请先导入网页，再保存当前配置。");
+    if (!entries.length || entries.length > MAX_RECORDS) throw new Error("每个文件需包含 1 至 500 份档案。");
+    // Validate every entry before returning anything to the storage transaction.
+    const rows = [];
+    for (const entry of entries) {
+      if (!object(entry)) throw new Error("备份档案格式错误。");
+      let row;
+      if (typeof entry.jsonText === "string" && !Object.hasOwn(entry, "legacyPayload")) row = await prepare(entry.jsonText, { name: entry.name });
+      else if (object(entry.legacyPayload) && !Object.hasOwn(entry, "jsonText")) row = await legacy.prepare(entry.legacyPayload,
+        { id: `legacy:${globalThis.crypto.randomUUID()}`, kind: "named", name: validName(entry.name) });
+      else throw new Error("备份档案缺少原生 JSON，或包含冲突的配装格式。");
+      if (entry.name !== undefined) row.name = validName(entry.name);
+      if (Number.isFinite(entry.capturedAt) && entry.capturedAt > 0 && entry.capturedAt <= Date.now()) row.capturedAt = entry.capturedAt;
+      rows.push(row);
+    }
+    return rows;
+  }
+  function backup(rows) {
+    if (!rows.length) throw new Error("没有可备份的档案。");
+    return JSON.stringify({ format: FORMAT, version: 2, exportedAt: new Date().toISOString(), archives: rows.map(row => {
+      const info = describe(row);
+      return { name: validName(row.name), capturedAt: row.capturedAt,
+        ...(info.legacy ? { legacyPayload: info.data } : { jsonText: row.jsonText }) };
+    }) }, null, 2);
+  }
+  return Object.freeze({ FORMAT, MAX_BYTES, MAX_RECORDS, parse, inspect, prepare, describe, validName, importFile, backup });
+});
+
 // ---- archive_store.js ----
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
@@ -308,72 +408,200 @@
   return Object.freeze({ DB_NAME, open, create });
 });
 
-// ---- archive_bridge.js ----
+// ---- native_adapter.js ----
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
-  else root.MWILoadoutBridge = factory();
+  else root.MWINativeAdapter = factory();
 })(globalThis, function () {
   "use strict";
-  function create({ core, pageWindow, origin, onImport, onStatus = () => {}, timeout = 15000, now = Date.now }) {
-    const pending = new Map(), loading = new Map(), recentIds = new Set();
-    const prefix = `mwi-archive:${globalThis.crypto.randomUUID()}:`;
-    let sequence = 0, clock = 0;
-    const report = text => onStatus(text, "error");
-    function expire(id) {
-      const entry = pending.get(id);
-      if (entry) { pending.delete(id); report("未收到网站导入成功回执，本次数据尚未归档。可导出 JSON 后手动导入。"); }
-    }
-    function observe(event) {
-      if (event.source !== pageWindow || event.origin !== origin) return;
-      const message = event.data;
-      if (!message || message.channel !== "mwi-tm-bridge" || typeof message.requestId !== "string" ||
-          !message.requestId || message.requestId.length > 200) return;
-      const id = message.requestId;
-      if (message.type === "mwi-tm-import") {
-        if (id.startsWith(prefix) || pending.has(id) || recentIds.has(id) ||
-            (message.importTarget && message.importTarget !== "player")) return;
-        if (pending.size >= 50) { report("等待导入回执的请求过多，请稍后重试。"); return; }
-        try {
-          const snapshot = core.sanitizePayload(message.payload);
-          // Receive order survives same-millisecond and out-of-order ACKs.
-          clock = Math.max(now(), clock + 1);
-          pending.set(id, { payload: snapshot.payload, at: clock, timer: setTimeout(() => expire(id), timeout) });
-        } catch (error) { report(`网站可继续导入，但档案未保存：${error.message}`); }
-      } else if (message.type === "mwi-tm-import-result") {
-        if (loading.has(id)) {
-          const task = loading.get(id); loading.delete(id); clearTimeout(task.timer);
-          if (message.ok === true) task.resolve(message);
-          else task.reject(new Error(message.message || "网站拒绝载入，请先保存或取消网站中尚未提交的编辑。"));
-          return;
+  const words = {
+    open: /^(?:导入\s*\/\s*导出|Import\s*\/\s*Export)$/i,
+    soloExport: /^(?:导出单人|Export Solo)$/i, groupExport: /^(?:导出组队|Export Group)$/i,
+    soloImport: /^(?:导入到玩家|Import To Player)$/i, groupImport: /^(?:导入组队|Import Group)$/i,
+    close: /^(?:关闭|Close)$/i
+  };
+  const label = element => (element.getAttribute("aria-label") || element.textContent || "").replace(/\s+/g, " ").trim();
+  const visible = element => !!element && !element.hidden && element.getClientRects().length > 0;
+  function uniqueButton(parent, expression) {
+    const all = [...parent.querySelectorAll("button")].filter(b => visible(b) && expression.test(label(b)));
+    if (all.length !== 1) throw new Error("未能唯一识别网页原生导入/导出控件，请关闭其他弹窗并回到模拟器主页后重试。");
+    if (all[0].disabled) throw new Error("网页原生操作暂不可用，请先处理当前编辑或等待网页加载。");
+    return all[0];
+  }
+  function create({ document: doc = document, inspect, timeout = 45000 } = {}) {
+    let locked = false, recovery = null, recoveryBackedUp = false;
+    const win = doc.defaultView;
+    const sleep = () => new Promise(resolve => win.setTimeout(resolve, 50));
+    async function wait(check, message, state) {
+      const end = Date.now() + timeout;
+      while (Date.now() < end) {
+        if (state?.interrupted) throw new Error("检测到你正在操作网页，已停止后续自动步骤；请核对当前网页状态。");
+        if (state?.modal && [...doc.querySelectorAll('[role="dialog"]')].some(el => el !== state.modal && visible(el))) {
+          state.interrupted = true;
+          throw new Error("网页出现了其他弹窗，已停止后续步骤；请先处理网页提示，再下载原有输入备份。");
         }
-        const entry = pending.get(id);
-        if (!entry) return;
-        clearTimeout(entry.timer); pending.delete(id);
-        recentIds.add(id);
-        if (recentIds.size > 200) recentIds.delete(recentIds.values().next().value);
-        if (message.ok !== true) { report("网站导入未成功，本次数据未归档。"); return; }
-        Promise.resolve().then(() => onImport(entry.payload, entry.at)).catch(error => report(`导入成功，但归档失败：${error.message}`));
+        if (state?.modal && !visible(state.modal)) throw new Error("网页导入/导出窗口已关闭，本次操作未获确认。");
+        const result = check(); if (result) return result;
+        await sleep();
+      }
+      if (state) state.uncertain = true;
+      throw new Error(message);
+    }
+    function findModal() {
+      const matches = [...doc.querySelectorAll('[role="dialog"]')].filter(el => visible(el) &&
+        [...el.querySelectorAll("button")].some(b => words.soloExport.test(label(b))));
+      if (matches.length > 1) throw new Error("存在多个原生导入/导出窗口，请先关闭多余窗口。");
+      return matches[0];
+    }
+    function controls(modal, scope) {
+      const exportButton = uniqueButton(modal, words[`${scope}Export`]);
+      let section = exportButton.parentElement;
+      while (section && section !== modal && !section.querySelector("textarea")) section = section.parentElement;
+      if (!section || section === modal || section.querySelectorAll("textarea").length !== 1 || section.querySelectorAll('input[type="file"]').length !== 1)
+        throw new Error("网页原生表单结构已变化，未执行保存或导入，请更新配装助手。");
+      return { section, textarea: section.querySelector("textarea"), file: section.querySelector('input[type="file"]'),
+        exportButton, importButton: uniqueButton(section, words[`${scope}Import`]) };
+    }
+    function setText(element, value) {
+      const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(element, value); element.dispatchEvent(new win.Event("input", { bubbles: true }));
+    }
+    function status(modal) {
+      const candidates = [...modal.querySelectorAll(".modal-body-text > div > p.text-success,.modal-body-text > div > p.text-destructive,.modal-body-text > div > p.text-muted-foreground")].filter(visible);
+      if (candidates.length > 1) throw new Error("网页结果区域有歧义，请关闭其他提示后重试。");
+      return candidates[0]?.textContent.trim() || "";
+    }
+    function assertPage() {
+      if (!/^#\/home(?:[/?]|$)/.test(win.location.hash)) throw new Error("请先打开模拟器主页，等待配置加载完成后重试。");
+    }
+    async function selectPlayer(modal, slot, state) {
+      if (!/^[1-5]$/.test(String(slot))) throw new Error("请选择玩家 1 至 5。");
+      const { section } = controls(modal, "solo");
+      const trigger = section.querySelector('[role="combobox"]');
+      if (!trigger) throw new Error("未找到网页原生玩家选择器，请更新插件后重试。");
+      // Use the public keyboard interaction of the native Reka selector.
+      trigger.dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true }));
+      const options = await wait(() => {
+        const popup = doc.getElementById(trigger.getAttribute("aria-controls"));
+        const items = popup && [...popup.querySelectorAll('[role="option"]')].filter(visible);
+        return items?.length ? items : null;
+      }, "网页玩家选择器没有打开，请手动关闭弹窗后重试。", state);
+      // The verified native form enumerates simulator.players in fixed slot order.
+      // Refuse changed cardinality; single export also verifies the resulting player.id.
+      if (options.length !== 5) throw new Error("网页玩家槽位结构已变化，未执行导入。");
+      const old = options.findIndex(o => o.getAttribute("aria-selected") === "true");
+      options[Number(slot) - 1].dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+      await wait(() => trigger.getAttribute("aria-expanded") !== "true", "网页玩家选择未完成。", state);
+      return old >= 0 ? String(old + 1) : null;
+    }
+    async function exportCurrent(modal, scope, slot, state) {
+      const c = controls(modal, scope), beforeStatus = status(modal);
+      setText(c.textarea, ""); c.exportButton.click();
+      return wait(() => {
+        if (c.textarea.value.trim()) {
+          const info = inspect(c.textarea.value);
+          if (info.scope !== scope || (scope === "solo" && String(info.players[0].id) !== String(slot)))
+            throw new Error("网页返回的导出范围与选择不符，本次没有保存或导入。");
+          return c.textarea.value;
+        }
+        const message = status(modal);
+        if (message && message !== beforeStatus && /失败|failed|error/i.test(message)) throw new Error(`网页导出失败：${message}`);
+        return null;
+      }, "网页未在限定时间内生成新的导出内容；档案没有写入，请核对网页后重试。", state);
+    }
+    async function session(scope, slot, action, { confirmedGroup = false } = {}) {
+      if (locked) throw new Error("上一项网页操作还未结束，请稍后重试。");
+      assertPage();
+      if (recovery && !recoveryBackedUp) throw new Error("上次网页操作未获确认，请先下载网页原有输入备份，再开始新操作。");
+      locked = true;
+      const state = { modal: null, interrupted: false, uncertain: false }, previousFocus = doc.activeElement;
+      let opened = false, draft, savedSlot = null;
+      const onInteraction = event => {
+        if (event.isTrusted) {
+          state.interrupted = true;
+          try { state.inputSnapshot = { solo: controls(state.modal, "solo").textarea.value, group: controls(state.modal, "group").textarea.value }; }
+          catch (_) { /* Keep the original copy if the website removed its form. */ }
+        }
+      };
+      const rememberDraft = () => {
+        if (draft) { recovery = { original: draft, interrupted: state.inputSnapshot || null }; recoveryBackedUp = false; }
+      };
+      try {
+        let modal = findModal(); opened = !modal;
+        if (!modal) {
+          if ([...doc.querySelectorAll('[role="dialog"]')].some(visible)) throw new Error("请先关闭网页上其他弹窗，再保存或导入配置。");
+          uniqueButton(doc, words.open).click();
+          modal = await wait(findModal, "网页导入/导出窗口未打开，请等待主页加载后重试。");
+        }
+        state.modal = modal;
+        // Opening a portaled selector while the native dialog is still zooming
+        // destabilizes its ResizeObserver/Floating UI measurements. Wait for the
+        // website's finite entrance animation before interacting with controls.
+        await wait(() => !modal.getAnimations().some(a => a.playState === "running" && a.effect?.getComputedTiming().iterations !== Infinity),
+          "网页导入/导出窗口仍在加载，请稍后重试。", state);
+        draft = { solo: controls(modal, "solo").textarea.value, group: controls(modal, "group").textarea.value };
+        modal.addEventListener("input", onInteraction, true); modal.addEventListener("click", onInteraction, true); modal.addEventListener("keydown", onInteraction, true);
+        if (scope === "solo") savedSlot = await selectPlayer(modal, slot, state);
+        return await action(modal, state);
+      } finally {
+        const modal = state.modal;
+        if (modal) {
+          modal.removeEventListener("input", onInteraction, true); modal.removeEventListener("click", onInteraction, true); modal.removeEventListener("keydown", onInteraction, true);
+          if (state.uncertain || state.interrupted) {
+            // Native async handlers cannot be cancelled. Keep a recoverable copy of
+            // draft text instead of overwriting text while they may still finish.
+            rememberDraft();
+          } else if (visible(modal)) {
+            try {
+              if (draft) for (const key of ["solo", "group"]) setText(controls(modal, key).textarea, draft[key]);
+              if (!opened && savedSlot) await selectPlayer(modal, savedSlot);
+              if (opened) {
+                uniqueButton(modal, words.close).click();
+                // Reka keeps closing dialogs mounted during the exit transition.
+                // Do not let the next operation adopt that disappearing instance.
+                await wait(() => !visible(modal), "网页窗口尚未关闭，请手动关闭后重试。");
+              }
+            } catch (_) { rememberDraft(); }
+          } else { rememberDraft(); }
+        }
+        locked = false;
+        if (previousFocus?.isConnected && !findModal()) previousFocus.focus();
       }
     }
-    function restore(row, slot) {
-      const id = `${prefix}${++sequence}`;
-      const message = core.restoreMessage(row, slot, id);
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          loading.delete(id);
-          reject(new Error("网站未响应。请先打开模拟器主页，等待加载完成后重试；档案仍保留。"));
-        }, timeout);
-        loading.set(id, { resolve, reject, timer });
-        try { pageWindow.postMessage(message, origin); }
-        catch (error) { clearTimeout(timer); loading.delete(id); reject(error); }
-      });
-    }
-    function close() {
-      for (const entry of pending.values()) clearTimeout(entry.timer);
-      for (const entry of loading.values()) { clearTimeout(entry.timer); entry.reject(new Error("档案助手已关闭。")); }
-      pending.clear(); loading.clear();
-    }
-    return Object.freeze({ observe, restore, close });
+    return Object.freeze({
+      capture(scope, slot) {
+        if (!["solo", "group"].includes(scope)) return Promise.reject(new Error("请选择保存单人还是整队。"));
+        return session(scope, slot, (modal, state) => exportCurrent(modal, scope, slot, state));
+      },
+      restore(text, scope, slot, { confirmedGroup = false, legacy = false } = {}) {
+        if (scope === "group" && !confirmedGroup) return Promise.reject(new Error("恢复整队配置前，请先确认影响范围。"));
+        if (!["solo", "group"].includes(scope)) return Promise.reject(new Error("档案恢复范围无效。"));
+        if (!legacy && inspect(text).scope !== scope) return Promise.reject(new Error("档案范围与导入入口不一致。"));
+        return session(scope, slot, async (modal, state) => {
+          // Prove the native target id before any configuration replacement.
+          if (scope === "solo") await exportCurrent(modal, scope, slot, state);
+          const c = controls(modal, scope), filename = `mwi-archive-${win.crypto.randomUUID()}.json`;
+          const transfer = new win.DataTransfer(); transfer.items.add(new win.File([text], filename, { type: "application/json" }));
+          c.file.files = transfer.files; c.file.dispatchEvent(new win.Event("change", { bubbles: true }));
+          await wait(() => c.textarea.value === text && status(modal).includes(filename), "网页未确认读取档案文件，尚未点击导入。", state);
+          c.importButton.click();
+          const message = await wait(() => {
+            const result = status(modal); return result && !result.includes(filename) ? result : null;
+          }, "网页没有确认导入结果，可能仍在处理中；请核对网页配置，不要反复点击导入。", state);
+          if (!/导入成功|导入.*成功|import success|imported successfully/i.test(message)) throw new Error(`网页未完成导入：${message}`);
+          return message;
+        }, { confirmedGroup });
+      },
+      get recoveryAvailable() { return !!recovery; },
+      backupDraft() {
+        if (!recovery) throw new Error("没有需要取回的原有输入文本。");
+        const text = JSON.stringify({ format: "mwi-native-input-recovery", version: 1, savedAt: new Date().toISOString(), ...recovery }, null, 2);
+        // Keep the copy available for repeated download. Do not write it back
+        // into a form whose native asynchronous handler may still be running.
+        recoveryBackedUp = true;
+        return text;
+      }
+    });
   }
   return Object.freeze({ create });
 });
@@ -385,252 +613,281 @@
     (location.hostname === "azhu949.github.io" && location.pathname.startsWith("/MWICombatSimulator/"));
   if (!supported || root.__MWILoadoutArchiveInstalled) return;
   root.__MWILoadoutArchiveInstalled = true;
-  const C = root.MWILoadoutCore, S = root.MWILoadoutStore;
-  let storePromise, rows = [], selected = "", query = "", filter = "all", draftName = "", slot = "1";
-  let ui, panelOpen = false, busy = false, pendingFile = null, undo = null;
-  let lastStatus = "等待主站一键导入，或导入网站的现代单人 JSON。", lastTone = "info";
+  const D = root.MWINativeDocument, S = root.MWILoadoutStore;
+  const native = root.MWINativeAdapter.create({ inspect: D.inspect });
+  let storePromise, rows = [], selected = "", scope = "solo", query = "", filter = "all";
+  let busy = false, ready = false, confirmGroup = false, pending = null, undo = null;
+  let ui;
   const date = value => new Date(value).toLocaleString("zh-CN", { hour12: false });
+  const label = row => row.schemaVersion === 2 ? row.documentKind === "group" ? "整队" : "单人" : "旧版档案";
   const db = () => storePromise ||= S.create().catch(error => { storePromise = null; throw error; });
-  function node(tag, text, className) {
-    const el = document.createElement(tag); if (text !== undefined) el.textContent = text;
-    if (className) el.className = className; return el;
+  function el(tag, text, cls) {
+    const result = document.createElement(tag); if (text !== undefined) result.textContent = text;
+    if (cls) result.className = cls; return result;
   }
-  function button(text, fn, className) {
-    const b = node("button", text, className); b.type = "button";
-    b.addEventListener("click", () => { Promise.resolve().then(fn).catch(error => status(error.message, "error")); });
+  function button(text, fn, cls) {
+    const b = el("button", text, cls); b.type = "button";
+    b.addEventListener("click", () => Promise.resolve().then(fn).catch(error => status(error.message, "error")));
     return b;
   }
   function status(message, tone = "info") {
-    lastStatus = message; lastTone = tone;
-    if (!ui) return;
-    ui.status.replaceChildren(document.createTextNode(message)); ui.status.dataset.tone = tone;
-    if (undo) ui.status.append(button("撤销删除", async () => {
-      const id = undo; undo = null;
-      await (await db()).update(id, { deletedAt: null, updatedAt: Date.now() });
-      await refresh(); status("档案已恢复。");
-    }));
+    ui.status.textContent = message; ui.status.dataset.tone = tone;
+    ui.recovery.hidden = !native.recoveryAvailable;
+    ui.undo.hidden = !undo;
   }
-  const bridge = root.MWILoadoutBridge.create({ core: C, pageWindow: root, origin: location.origin,
-    onStatus: status,
-    onImport: async (payload, capturedAt) => {
-      const row = await C.prepare(payload, { now: capturedAt });
-      const result = await (await db()).autoSave(row);
-      await refresh();
-      status(result === "saved" ? `${row.characterName} 的配装已归档。可另存命名配装，保留这一版本。`
-        : result === "unchanged" ? `${row.characterName} 的配装没有变化，已保留现有档案。` : "较旧的导入回执已忽略，保留较新的配装。");
+  function setBusy(value) {
+    busy = value; ui.panel.setAttribute("aria-busy", String(value));
+    for (const control of ui.shadow.querySelectorAll("button,input,select")) control.disabled = value;
+    ui.capture.disabled = value || !ready;
+    ui.source.disabled = value || scope === "group";
+  }
+  async function task(message, action, { focus } = {}) {
+    if (busy) return;
+    const previousFocus = ui.shadow.activeElement;
+    setBusy(true); status(message);
+    try { return await action(); }
+    finally {
+      setBusy(false); ui.recovery.hidden = !native.recoveryAvailable;
+      const nativeDialog = [...document.querySelectorAll('[role="dialog"]')].some(e => !e.hidden && e.getClientRects().length);
+      if (ui.host.isConnected && !nativeDialog && (focus || previousFocus)) {
+        const target = focus?.() || (previousFocus?.isConnected ? previousFocus : ui.captureName);
+        target?.focus();
+      }
     }
-  });
-  root.addEventListener("message", bridge.observe);
-
+  }
+  async function nativeCall(action) {
+    // Reserve the embedded page space while the website's own modal takes focus.
+    ui.host.style.visibility = "hidden";
+    try { return await action(); }
+    finally { ui.host.style.visibility = ""; }
+  }
   function visibleRows() {
     return rows.filter(row => (filter === "trash" ? !!row.deletedAt : !row.deletedAt) &&
-      (!["named", "recent"].includes(filter) || row.kind === filter) &&
-      `${row.name} ${row.characterName}`.toLowerCase().includes(query.toLowerCase()));
-  }
-  function choose(id) {
-    selected = id; draftName = rows.find(row => row.id === id)?.name || ""; render();
+      (filter === "solo" ? row.schemaVersion === 2 && row.documentKind === "solo"
+        : filter === "group" ? row.schemaVersion === 2 && row.documentKind === "group"
+        : filter === "legacy" ? row.schemaVersion !== 2 : true) &&
+      `${row.name} ${row.characterName || ""}`.toLowerCase().includes(query.toLowerCase()));
   }
   async function refresh() {
-    rows = (await (await db()).all()).sort((a, b) => b.updatedAt - a.updatedAt);
-    if (!rows.some(row => row.id === selected)) { selected = ""; draftName = ""; }
-    if (!selected && visibleRows().length) { selected = visibleRows()[0].id; draftName = visibleRows()[0].name; }
+    const data = await (await db()).all(); ready = true;
+    rows = data.sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!visibleRows().some(row => row.id === selected)) { selected = visibleRows()[0]?.id || ""; confirmGroup = false; }
     render();
   }
-  function exportRows(values) {
-    if (!values.length) throw new Error("没有可导出的档案。");
-    const blob = new Blob([C.exportFile(values)], { type: "application/json" });
-    const url = URL.createObjectURL(blob), a = node("a");
-    a.href = url; a.download = `MWI配装档案_${new Date().toISOString().slice(0, 10).replaceAll("-", "")}.json`;
-    a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    status(`已生成 ${values.length} 套配装的 JSON 备份。`);
+  function download(text, name) {
+    const url = URL.createObjectURL(new Blob([text], { type: "application/json;charset=utf-8" }));
+    const a = el("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  async function addFile(file) {
-    if (!file) return;
-    pendingFile = null; renderImportPreview();
-    if (file.size > C.MAX_BYTES * 10) throw new Error("文件超过 20 MB，请拆分后重试。");
-    const entries = C.parseFile(await file.text());
-    // All entries and hashes are checked before any database write.
-    const prepared = await Promise.all(entries.map(async entry => {
-      const identity = C.sanitizePayload(entry.payload);
-      const row = await C.prepare(entry.payload, { id: `named:${crypto.randomUUID()}`, kind: "named",
-        name: entry.name?.trim() || `${identity.characterName} · 文件配装` });
-      if (Number.isFinite(entry.capturedAt) && entry.capturedAt > 0 && entry.capturedAt <= Date.now()) row.capturedAt = entry.capturedAt;
-      return row;
-    }));
-    pendingFile = prepared; renderImportPreview();
-    status(`已校验 ${prepared.length} 套配装，请点击“添加档案”完成导入。相同名称及内容会去重。`);
-  }
-  function renderImportPreview() {
-    if (!ui) return;
-    ui.importPreview.replaceChildren();
-    if (!pendingFile) return;
-    ui.importPreview.append(node("span", `${pendingFile.length} 套待导入`), button("添加档案", async () => {
-      if (busy || !pendingFile) return;
-      const prepared = pendingFile; busy = true; render();
-      try {
-        const count = await (await db()).addNamed(prepared); pendingFile = null;
-        await refresh(); status(`已添加 ${count} 套配装，跳过 ${prepared.length - count} 套重复配装。`);
-      } finally { busy = false; render(); }
-    }, "primary"), button("取消导入", () => { pendingFile = null; renderImportPreview(); status("已取消文件导入。"); }));
-  }
-  function itemMark(hrid) {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("class", "item-mark"); svg.setAttribute("aria-hidden", "true");
-    const symbol = document.getElementById(`mwi-item-icon-${hrid.slice(7)}`);
-    // Reuse already-rendered local symbols only. Do not fetch assets or copy executable markup.
-    if (symbol) {
-      for (const part of symbol.querySelectorAll("path,rect,circle,ellipse,polygon,polyline,line,g")) {
-        if (part.parentNode !== symbol) continue;
-        const safe = document.createElementNS(svg.namespaceURI, part.tagName);
-        for (const key of ["d", "fill", "stroke", "stroke-width", "x", "y", "width", "height", "cx", "cy", "r", "rx", "ry", "points", "transform"])
-          if (part.hasAttribute(key) && !/url\s*\(/i.test(part.getAttribute(key))) safe.setAttribute(key, part.getAttribute(key));
-        // Group nodes are intentionally omitted unless flat geometry is available.
-        if (part.tagName !== "g") svg.append(safe);
-      }
-      if (symbol.hasAttribute("viewBox")) svg.setAttribute("viewBox", symbol.getAttribute("viewBox"));
-    }
-    if (!svg.childNodes.length) {
-      const path = document.createElementNS(svg.namespaceURI, "path");
-      path.setAttribute("d", "M4 7 12 3 20 7 20 17 12 21 4 17Z M4 7 12 11 20 7 M12 11V21");
-      path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor"); path.setAttribute("stroke-width", "1.5"); svg.append(path);
-      const title = document.createElementNS(svg.namespaceURI, "title"); title.textContent = "物品图标未在本页加载，显示占位图标"; svg.append(title);
-    }
-    return svg;
-  }
-  function renderDetail() {
-    const area = ui.detail; area.replaceChildren();
-    const row = rows.find(r => r.id === selected && visibleRows().some(v => v.id === r.id));
-    if (!row) {
-      const empty = node("div", undefined, "detail-empty");
-      empty.append(node("h3", "把这一套配装留下来"), node("p", "在网站“导入/导出”中使用主站一键导入，成功后会自动归档。", "muted"),
-        node("p", "也可导入网站的现代单人 JSON，或本助手导出的备份。", "muted"),
-        button("选择 JSON 文件", () => ui.file.click()), button("重新读取档案", () => refresh()));
-      area.append(empty); return;
-    }
-    let info;
-    try { info = C.details(row.payload); } catch (error) { area.append(node("p", error.message)); return; }
-    area.append(node("h3", row.name), node("p", `角色：${row.characterName}`, "muted"),
-      node("p", `数据采集：${date(row.capturedAt)}`, "note"),
-      node("p", `来源：${row.sourceFormat} · 服务器未提供`, "note"));
-    const scope = node("div", undefined, "scope");
-    scope.append(node("p", "仅载入角色配装；地图、时长、市场估值和全局迷宫设置保持当前值。"));
-    if (info.missing.length) scope.append(node("p", `源数据缺少或待核对：${info.missing.join("、")}。这些字段由网站规则处理，可能沿用原值或回退默认值，请载入后核对。`));
-    area.append(scope);
-    if (row.deletedAt) {
-      area.append(button("恢复这份档案", async () => {
-        await (await db()).update(row.id, { deletedAt: null, updatedAt: Date.now() }); undo = null;
-        filter = "all"; ui.filter.value = filter; await refresh(); status("档案已恢复。");
-      }, "primary"));
+  function renderList() {
+    ui.list.replaceChildren();
+    const items = visibleRows();
+    if (!items.length) {
+      const filtered = query || !["all", "trash"].includes(filter);
+      ui.list.append(el("p", filter === "trash" ? "回收站为空。" : filtered ? "没有匹配的档案。" : "还没有保存的配置。", "empty"));
+      if (filtered) ui.list.append(button("清除筛选", () => { query = ""; filter = "all"; ui.search.value = ""; ui.filter.value = "all"; selected = visibleRows()[0]?.id || ""; render(); }));
       return;
     }
-    const naming = node("div", undefined, "name-field");
-    const input = node("input"); input.value = draftName; input.maxLength = 120; input.setAttribute("aria-label", "配装名称");
-    input.dataset.focus = "name"; input.addEventListener("input", () => { draftName = input.value; });
-    naming.append(input, button(row.kind === "recent" ? "另存为配装" : "保存名称", async () => {
-      const label = draftName.trim(); if (!label) throw new Error("请填写配装名称。");
-      if (row.kind === "recent") {
-        const copy = await C.prepare(row.payload, { id: `named:${crypto.randomUUID()}`, kind: "named", name: label });
-        copy.capturedAt = row.capturedAt;
-        const count = await (await db()).addNamed([copy]);
-        if (count) selected = copy.id;
-        await refresh(); status(count ? "命名配装已保存，后续自动导入不会覆盖它。" : "相同名称和内容的配装已存在。");
-      } else {
-        await (await db()).update(row.id, { name: label, updatedAt: Date.now() }); await refresh(); status("配装名称已保存。");
-      }
-    })); area.append(naming);
-    const actions = node("div", undefined, "actions"), target = node("select"); target.setAttribute("aria-label", "载入目标玩家");
-    for (let n = 1; n <= 5; n++) { const option = node("option", `玩家 ${n}`); option.value = String(n); target.append(option); }
-    target.value = slot; target.onchange = () => { slot = target.value; renderDetail(); };
-    const load = button(`载入玩家 ${slot}`, async () => {
-      if (busy) return;
-      if (!/^#\/home(?:[/?]|$)/.test(location.hash)) throw new Error("请先切换到模拟器主页，等待加载完成后再载入。");
-      busy = true; render(); status(`正在载入玩家 ${slot}，等待网站确认…`);
-      try { await bridge.restore(row, slot); status(`已载入玩家 ${slot}。其他玩家槽位保留；请核对源数据缺失的字段。`); }
-      finally { busy = false; render(); }
-    }, "primary");
-    actions.append(target, load, button("导出这一套", () => exportRows([row])));
-    actions.append(button("移入回收站", async () => {
-      await (await db()).update(row.id, { deletedAt: Date.now(), updatedAt: Date.now() }); undo = row.id;
-      selected = ""; await refresh(); status("档案已移入回收站，可随时恢复。");
-    }, "danger")); area.append(actions);
-    area.append(node("p", "载入会替换选中玩家槽位的角色字段，并可能重置该玩家的优化结果。", "note"));
-    if (!/^#\/home(?:[/?]|$)/.test(location.hash)) area.append(button("前往模拟器主页", () => { location.hash = "/home"; }));
-    const gear = node("ul", undefined, "gear");
-    const names = { head: "头部", body: "身体", legs: "腿部", feet: "脚部", hands: "手部", weapon: "武器", main_hand: "主手", two_hand: "双手", off_hand: "副手", pouch: "袋子", neck: "项链", earrings: "耳环", ring: "戒指", back: "背部", charm: "护符", trinket: "饰品" };
-    for (const item of info.gear) {
-      const li = node("li"); li.append(node("span", names[item.slot] || item.slot, "slot"), itemMark(item.itemHrid),
-        node("code", item.itemHrid), node("span", item.enhancementLevel === undefined ? "等级未知" : `+${item.enhancementLevel}`, "level")); gear.append(li);
+    for (const row of items) {
+      const item = button("", () => { selected = row.id; confirmGroup = false; render(); ui.list.querySelector('[aria-pressed="true"]')?.focus(); });
+      item.className = "archive"; item.setAttribute("aria-pressed", String(row.id === selected));
+      item.append(el("strong", row.name), el("small", `${label(row)} · ${row.characterName || "未命名角色"}`), el("small", date(row.capturedAt)));
+      ui.list.append(item);
     }
-    area.append(gear);
-    if (!info.gear.length) area.append(node("p", "此档案未包含已装备物品。", "note"));
+  }
+  function renderDetail() {
+    ui.detail.replaceChildren(); const row = rows.find(r => r.id === selected && visibleRows().some(v => v.id === r.id));
+    if (!row) {
+      const box = el("div", undefined, "detail-empty");
+      box.append(el("h3", filter === "trash" ? "已删除的档案可在这里恢复" : "把网页上调好的配置留下来"),
+        el("p", "选择上方的单人或整队，点击“保存网页当前配置”。", "muted"),
+        el("p", "直接使用网页原生导出，不需要先从游戏重新导入，也不需要下载再上传。", "muted"));
+      ui.detail.append(box); return;
+    }
+    ui.detail.append(el("h3", row.name), el("p", `${label(row)} · 保存于 ${date(row.capturedAt)}`, "note"));
+    let info;
+    try { info = D.describe(row); }
+    catch (error) {
+      ui.detail.append(el("p", `这份档案暂时无法读取：${error.message}`, "note"),
+        button("下载原始档案供修复", () => download(JSON.stringify(row, null, 2), "MWI待修复档案.json")));
+      return;
+    }
+    const scopeBox = el("div", undefined, "scope");
+    scopeBox.append(el("p", info.legacy ? "旧版导入快照：不含保存后在网页上的手动修改，也可能缺少原生配置字段。"
+      : info.scope === "group" ? `完整整队 JSON · ${info.players.length} 个玩家槽位及模拟设置。`
+        : "完整单人 JSON · 玩家配装及原生导出的模拟设置。"));
+    scopeBox.append(el("p", info.legacy ? "恢复时交给网页原生单人导入；缺失字段沿用网页规则，请核对结果。"
+      : "保存内容完整保留；恢复范围和字段处理由网页原生导入决定。", "note"));
+    ui.detail.append(scopeBox);
+    if (row.deletedAt) {
+      ui.detail.append(button("恢复这份档案", () => task("正在恢复档案…", async () => {
+        await (await db()).update(row.id, { deletedAt: null, updatedAt: Date.now() }); if (undo === row.id) undo = null; filter = "all"; ui.filter.value = "all";
+        selected = row.id; await refresh(); status("档案已从回收站恢复。");
+      }), "primary")); return;
+    }
+    const naming = el("form", undefined, "name-field"), name = el("input");
+    name.value = row.name; name.maxLength = 120; name.setAttribute("aria-label", "档案名称");
+    const rename = el("button", "保存名称"); rename.type = "submit";
+    naming.append(name, rename); naming.addEventListener("submit", event => {
+      event.preventDefault(); const value = name.value;
+      task("正在保存名称…", async () => {
+        const valueName = D.validName(value);
+        await (await db()).update(row.id, { name: valueName, updatedAt: Date.now() }); await refresh(); status("档案名称已保存。");
+      }, { focus: () => ui.detail.querySelector('input[aria-label="档案名称"]') }).catch(error => status(error.message, "error"));
+    }); ui.detail.append(naming);
+    if (info.players.length) {
+      const table = el("table"); const caption = el("caption", "保存的玩家", "sr-only");
+      table.append(caption); const head = el("thead"), tr = el("tr");
+      for (const word of ["槽位", "角色", "已配装备"]) { const th = el("th", word); th.scope = "col"; tr.append(th); }
+      head.append(tr); table.append(head); const body = el("tbody");
+      for (const p of info.players) {
+        const line = el("tr"); const equipped = Object.values(p.equipment).filter(v => v?.itemHrid).length;
+        line.append(el("td", `玩家 ${p.id}`), el("td", p.name || "未命名"), el("td", `${equipped} 件`)); body.append(line);
+      }
+      table.append(body); ui.detail.append(table);
+    } else ui.detail.append(el("p", `角色：${row.characterName}`, "muted"));
+    const actions = el("div", undefined, "actions");
+    if (info.scope === "solo") {
+      const targetLabel = el("label", "导入目标 "), target = el("select"); target.setAttribute("aria-label", "导入目标玩家");
+      for (let n = 1; n <= 5; n++) { const opt = el("option", `玩家 ${n}`); opt.value = String(n); target.append(opt); }
+      target.value = ui.targetSlot || "1"; target.addEventListener("change", () => { ui.targetSlot = target.value; }); targetLabel.append(target);
+      actions.append(targetLabel, button("导入到网页", () => restore(row, info, target.value), "primary"));
+      scopeBox.append(el("p", info.legacy ? "仅导入指定玩家；旧档案缺失字段请在网页中核对。"
+        : "会替换所选玩家，并按网页原生规则导入包内模拟设置；其他玩家配装保留。", "note"));
+    } else actions.append(button("导入整队配置", () => { confirmGroup = true; renderDetail(); ui.detail.querySelector('[data-group-confirm]')?.focus(); }, "primary"));
+    ui.detail.insertBefore(actions, naming);
+    if (info.scope === "group" && confirmGroup) {
+      const confirmation = el("div", undefined, "confirmation");
+      confirmation.append(el("p", `将恢复“${row.name}”中的玩家 ${info.players.map(p => p.id).join("、")} 及模拟设置。当前相应配置会被替换，优化结果可能重置。`));
+      const yes = button("确认恢复整队及模拟设置", () => restore(row, info, null, true), "primary"); yes.dataset.groupConfirm = "";
+      confirmation.append(yes, button("取消整队恢复", () => { confirmGroup = false; renderDetail(); ui.detail.querySelector('.primary')?.focus(); })); ui.detail.insertBefore(confirmation, naming);
+    }
+    const tools = el("div", undefined, "actions secondary-actions");
+    tools.append(button(info.legacy ? "导出旧版档案" : "下载原生 JSON", () => {
+      download(info.legacy ? D.backup([row]) : row.jsonText, info.legacy ? "MWI旧版档案.json" : `MWI-${info.scope}-${Date.now()}.json`);
+      status("已生成下载文件，档案仍保留。");
+    }), button("移入回收站", () => task("正在移动档案…", async () => {
+      await (await db()).update(row.id, { deletedAt: Date.now(), updatedAt: Date.now() }); undo = row.id;
+      confirmGroup = false; await refresh(); status("档案已移入回收站，可撤销或稍后恢复。");
+    }), "danger")); ui.detail.append(tools);
+    const details = el("details"), summary = el("summary", info.legacy ? "查看旧版保存内容" : "查看保存的原生 JSON");
+    details.append(summary); details.addEventListener("toggle", () => {
+      if (details.open && !details.querySelector("pre")) {
+        details.append(el("pre", info.text.slice(0,12000)));
+        if (info.text.length > 12000) details.append(el("p", "仅预览前 12,000 个字符；下载文件包含完整内容。", "note"));
+      }
+    }); ui.detail.append(details);
+  }
+  async function restore(row, info, target, confirmed = false) {
+    await task("正在调用网页原生导入，请等待网页确认…", async () => {
+      await nativeCall(() => native.restore(info.text, info.scope, target, { confirmedGroup: confirmed, legacy: info.legacy }));
+      confirmGroup = false; renderDetail(); status(info.scope === "group" ? "网页已确认：整队配置导入成功。" : `网页已确认：已导入玩家 ${target}。`);
+    }, { focus: () => ui.detail.querySelector('.actions > .primary') });
   }
   function render() {
-    if (!ui) return;
-    const active = ui.shadow.activeElement;
-    const focus = active?.dataset.focus, start = active?.selectionStart, end = active?.selectionEnd;
-    const visible = visibleRows(); ui.list.replaceChildren();
-    for (const row of visible) {
-      const entry = button("", () => choose(row.id), "archive"); entry.setAttribute("aria-pressed", String(row.id === selected));
-      entry.append(node("strong", row.name), node("small", `${row.kind === "recent" ? "最近导入" : "命名配装"} · ${row.characterName}`), node("small", date(row.capturedAt)));
-      ui.list.append(entry);
-    }
-    if (!visible.length) ui.list.append(node("p", query ? "没有匹配的档案。" : filter === "trash" ? "回收站为空。" : "还没有配装档案。", "empty"));
-    ui.launcherText.textContent = `配装档案 · ${rows.filter(row => !row.deletedAt).length}`;
-    renderDetail(); renderImportPreview();
-    for (const el of ui.panel.querySelectorAll("button,input,select")) el.disabled = busy;
-    if (focus) {
-      const next = ui.shadow.querySelector(`[data-focus="${focus}"]`);
-      if (next) { next.focus(); if (start != null) next.setSelectionRange(start, end); }
-    }
+    renderList(); renderDetail();
+    ui.count.textContent = `${rows.filter(row => !row.deletedAt).length} 份档案`;
+    setBusy(busy);
+  }
+  function renderPending() {
+    ui.pending.replaceChildren(); if (!pending) return;
+    const groups = pending.filter(row => row.documentKind === "group").length;
+    ui.pending.append(el("p", `已校验 ${pending.length} 份档案${groups ? `，其中 ${groups} 份整队配置` : ""}。添加到档案库不会修改网页配置。`),
+      button("添加到档案库", () => task("正在添加档案…", async () => {
+        const source = pending; if (!source) return;
+        const count = await (await db()).addNamed(source); pending = null; renderPending();
+        query = ""; filter = "all"; ui.search.value = ""; ui.filter.value = "all";
+        if (count) selected = source[0].id;
+        await refresh(); status(`已添加 ${count} 份档案，跳过 ${source.length - count} 份同名同内容档案。`);
+      })), button("取消添加", () => { pending = null; renderPending(); status("已取消添加，已有档案保留。"); }));
   }
   function mount() {
-    if (ui || !document.body) return;
-    const host = node("div"); host.id = "mwi-loadout-archive-host";
-    const shadow = host.attachShadow({ mode: "open" });
-    const style = node("style", ":host{all:initial;color-scheme:dark;font:13px/1.6 system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;--bg:#111827;--surface:#1c2636;--fg:#f1f5f9;--muted:#b6c3d5;--line:#3a4a60;--accent:#2563eb;--hover:#253348;color:var(--fg)}\n:host([data-theme=\"light\"]){color-scheme:light;--bg:#fff;--surface:#f1f5f9;--fg:#182233;--muted:#4b5c73;--line:#b7c3d2;--hover:#e5edf8}\n*{box-sizing:border-box}button,input,select{font:inherit;color:inherit}button{cursor:pointer}button:disabled{cursor:wait;opacity:.55}button,input,select{border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:7px 10px}button:hover:not(:disabled){background:var(--hover)}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid #60a5fa;outline-offset:3px}input{min-width:0}::selection{background:#1d4ed8;color:#fff}a{color:#75b4ff;text-underline-offset:3px}:host([data-theme=\"light\"]) a{color:#1d4ed8}\n.launcher{position:fixed;right:20px;bottom:20px;z-index:10000;display:flex;gap:8px;align-items:center;background:var(--bg);padding:10px 16px}.launcher svg{width:18px;height:18px}.panel{position:fixed;z-index:10001;right:20px;bottom:74px;width:min(760px,calc(100vw - 40px));height:min(680px,calc(100dvh - 100px));background:var(--bg);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;overflow:hidden}.panel[hidden]{display:none}header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line)}h2,h3,p{margin:0}h2{font-size:18px;line-height:1.4}h3{font-size:15px;overflow-wrap:anywhere}header p{font-size:12px;color:var(--muted);margin-top:3px}.close{border:0;background:transparent;font-size:13px;padding:7px 9px}.toolbar{display:flex;gap:8px;align-items:center;padding:12px 20px;flex-wrap:wrap}.toolbar input{flex:1;min-width:120px}.toolbar select{max-width:110px}.layout{display:grid;grid-template-columns:230px minmax(0,1fr);min-height:0;flex:1;border-top:1px solid var(--line)}.list{overflow:auto;border-right:1px solid var(--line);padding:8px}.archive{display:block;width:100%;text-align:left;border:0;border-radius:4px;background:transparent;margin-bottom:4px;padding:10px 12px;overflow-wrap:anywhere}.archive[aria-pressed=\"true\"]{background:var(--hover);outline:1px solid var(--line)}.archive strong{display:block;font-weight:600}.archive small{display:block;color:var(--muted);font-size:11px;margin-top:2px}.detail{overflow:auto;padding:18px 20px;min-width:0}.detail>p{margin-top:8px}.muted{color:var(--muted)}.note{font-size:12px;color:var(--muted);white-space:pre-line}.scope{margin:14px 0;padding:10px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:12px}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}.primary{background:var(--accent);border-color:var(--accent);color:#fff}.primary:hover:not(:disabled){background:#1d4ed8}.name-field{display:flex;gap:8px;align-items:center;margin-top:16px}.name-field input{width:100%}.danger{color:#fca5a5}:host([data-theme=\"light\"]) .danger{color:#a31515}.status{flex:none;margin:0 20px 14px;padding:8px 10px;background:var(--surface);font-size:12px;min-height:36px;white-space:pre-line;overflow-wrap:anywhere}.status[data-tone=\"error\"]{color:#fca5a5}:host([data-theme=\"light\"]) .status[data-tone=\"error\"]{color:#a31515}.status button{padding:1px 8px;margin-left:8px}.empty{padding:22px 12px;color:var(--muted);font-size:12px}.detail-empty{padding-top:30px}.detail-empty h3{margin-bottom:8px}.detail-empty p{margin:8px 0}.gear{margin:14px 0 0;padding:0;list-style:none}.gear li{display:flex;gap:8px;align-items:center;min-height:29px;border-bottom:1px solid var(--line);font-size:12px}.gear code{font:11px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}.gear .slot{flex:none;color:var(--muted);width:38px}.gear .level{margin-left:auto;white-space:nowrap}.item-mark{width:20px;height:20px;flex:none;color:var(--muted)}.file{display:none}.bottom{padding:9px 20px 12px;color:var(--muted);font-size:11px}\n@media(max-width:600px){.launcher{right:12px;bottom:12px}.panel{right:8px;bottom:64px;width:calc(100vw - 16px);height:calc(100dvh - 84px)}header{padding:12px 14px}.toolbar{padding:10px 14px}.layout{grid-template-columns:1fr;grid-template-rows:minmax(90px,32%) minmax(0,1fr)}.list{border-right:0;border-bottom:1px solid var(--line)}.detail{padding:14px}.status{margin:0 14px 10px}.bottom{padding:8px 14px}.name-field{flex-wrap:wrap}.actions select{max-width:100%}}\n.name-field button{flex:none;white-space:nowrap}input::placeholder{color:var(--muted);opacity:1}\n@media(prefers-reduced-motion:no-preference){.panel{animation:archive-open .14s ease-out}@keyframes archive-open{from{clip-path:inset(6% 0 0 0);opacity:.85}to{clip-path:inset(0);opacity:1}}}\n");
-    const launcherText = node("span", "配装档案");
-    const launcher = button("", () => {
-      panelOpen = !panelOpen; panel.hidden = !panelOpen; launcher.setAttribute("aria-expanded", String(panelOpen));
-      if (panelOpen) { refresh().catch(error => status(error.message, "error")); search.focus(); }
-    }, "launcher"); launcher.setAttribute("aria-expanded", "false"); launcher.setAttribute("aria-controls", "archive-panel");
-    launcher.append(launcherText);
-    const panel = node("aside", undefined, "panel"); panel.hidden = true; panel.id = "archive-panel";
-    panel.setAttribute("aria-label", "配装档案管理");
-    const head = node("header"), heading = node("div");
-    heading.append(node("h2", "配装档案"), node("p", "当前浏览器本地保存 · 支持 JSON 备份"));
-    head.append(heading, button("关闭", () => { panelOpen = false; panel.hidden = true; launcher.setAttribute("aria-expanded", "false"); launcher.focus(); }, "close"));
-    const toolbar = node("div", undefined, "toolbar"), search = node("input");
-    search.type = "search"; search.placeholder = "搜索配装或角色"; search.setAttribute("aria-label", "搜索配装或角色");
-    search.addEventListener("input", () => { query = search.value; render(); });
-    const filterSelect = node("select"); filterSelect.setAttribute("aria-label", "档案分类");
-    for (const [value, label] of [["all", "全部档案"], ["recent", "最近导入"], ["named", "命名配装"], ["trash", "回收站"]]) {
-      const option = node("option", label); option.value = value; filterSelect.append(option);
+    if (document.getElementById("mwi-loadout-archive-host")) return;
+    const host = el("div"); host.id = "mwi-loadout-archive-host";
+    const shadow = host.attachShadow({ mode: "open" }), style = el("style", ":host{all:initial;display:block;width:100%;min-width:0;margin-block-start:20px;scroll-margin-top:80px;container:archive / inline-size;color-scheme:dark;font:13px/1.6 system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;--bg:#111827;--surface:#1c2636;--fg:#f1f5f9;--muted:#b6c3d5;--line:#3a4a60;--accent:#2563eb;--hover:#253348;color:var(--fg)}\n:host([data-theme=\"light\"]){color-scheme:light;--bg:#fff;--surface:#f1f5f9;--fg:#182233;--muted:#4b5c73;--line:#b7c3d2;--hover:#e5edf8}\n*{box-sizing:border-box}button,input,select{font:inherit;color:inherit}button,input,select{border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:7px 10px}button{cursor:pointer}button:disabled,input:disabled,select:disabled{cursor:default;opacity:.55}button:hover:not(:disabled){background:var(--hover)}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #60a5fa;outline-offset:3px}input{min-width:0;caret-color:var(--fg)}input::placeholder{color:var(--muted);opacity:1}::selection{background:#1d4ed8;color:#fff}a{color:#75b4ff;text-underline-offset:3px}:host([data-theme=\"light\"]) a{color:#1d4ed8}[hidden]{display:none!important}\n.panel{width:100%;min-width:0;height:auto;background:var(--bg);border:1px solid var(--line);border-radius:10px}header{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:20px 24px;border-bottom:1px solid var(--line)}h2,h3,p{margin:0}h2{font-size:20px;line-height:1.4}h3{font-size:16px;overflow-wrap:anywhere}header p{font-size:12px;color:var(--muted);margin-top:4px}.archive-count{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.capture{padding:16px 24px 18px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px}.capture fieldset{display:flex;align-items:center;gap:16px;margin:0;padding:0;border:0}.capture legend{float:left;margin-right:14px;color:var(--muted);font-size:12px}.capture label{display:inline-flex;align-items:center;gap:6px}.capture input[type=radio]{margin:0;accent-color:var(--accent);width:16px;height:16px;padding:0}.capture-fields{display:flex;gap:8px;width:100%}.capture-fields input{flex:1;min-width:0}.capture-fields button{flex:none;white-space:nowrap}.capture>.note{width:100%}.toolbar{display:flex;gap:8px;align-items:center;padding:16px 24px;flex-wrap:wrap}.toolbar input{flex:1;min-width:150px}.toolbar select{max-width:130px}\n.layout{display:grid;grid-template-columns:minmax(210px,28%) minmax(0,1fr);align-items:start;min-height:260px;border-top:1px solid var(--line)}.list{max-height:46rem;overflow:auto;padding:10px;scrollbar-width:thin;scrollbar-color:var(--line) var(--bg);overscroll-behavior:auto}.archive{display:block;width:100%;text-align:left;border:0;border-radius:4px;background:transparent;margin-bottom:4px;padding:12px;overflow-wrap:anywhere}.archive[aria-pressed=\"true\"]{background:var(--hover);outline:1px solid var(--line)}.archive strong{display:block;font-weight:600}.archive small{display:block;color:var(--muted);font-size:11px;margin-top:3px}.detail{min-width:0;padding:22px 24px;overflow-wrap:anywhere;border-left:1px solid var(--line)}.detail>p{margin-top:8px}.muted{color:var(--muted)}.note{font-size:12px;color:var(--muted);white-space:pre-line}.scope{margin:16px 0;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:12px}.scope .note{margin-top:5px}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:16px}.actions label{display:flex;align-items:center;gap:8px}.primary{background:var(--accent);border-color:var(--accent);color:#fff}.primary:hover:not(:disabled){background:#1d4ed8}.name-field{display:flex;gap:8px;align-items:center;margin-top:20px}.name-field input{width:100%}.name-field button{flex:none;white-space:nowrap}.danger{color:#fca5a5}:host([data-theme=\"light\"]) .danger{color:#a31515}.empty{padding:22px 12px;color:var(--muted);font-size:12px}.detail-empty{padding-block:12px 30px}.detail-empty h3{margin-bottom:10px}.detail-empty p{margin:10px 0;max-width:65ch}.status{margin:16px 24px 12px;padding:10px 12px;background:var(--surface);font-size:12px;min-height:38px;white-space:pre-line;overflow-wrap:anywhere}.status[data-tone=\"error\"]{color:#fca5a5}:host([data-theme=\"light\"]) .status[data-tone=\"error\"]{color:#a31515}.footer-actions{display:flex;gap:8px;flex-wrap:wrap;padding:0 24px 6px}.footer-actions button{font-size:12px;padding:5px 9px}.bottom{padding:10px 24px 18px;color:var(--muted);font-size:11px}.file{display:none}\ntable{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;margin-top:18px}th,td{text-align:left;padding:9px 6px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{font-weight:500;color:var(--muted)}th:first-child{width:76px}th:last-child{width:80px}td:last-child{font-variant-numeric:tabular-nums}.secondary-actions{margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}.confirmation{margin-top:14px;padding:14px 0;border-block:1px solid var(--line)}.confirmation p{margin-bottom:12px}.confirmation button{margin:0 8px 6px 0}.import-preview{padding:0 24px;font-size:12px}.import-preview:empty{display:none}.import-preview p{margin:0 0 8px}.import-preview button{margin:0 8px 12px 0}details{margin-top:20px;font-size:12px}summary{cursor:pointer;color:var(--muted);padding:6px 0}pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 ui-monospace,SFMono-Regular,monospace;background:var(--surface);padding:12px;margin:8px 0}input,select,.archive{font-variant-numeric:tabular-nums}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}\n@container archive (max-width:680px){header{padding:16px}h2{font-size:18px}.capture{padding:14px 16px;gap:10px 12px}.capture-fields{flex-wrap:wrap}.capture-fields input{flex-basis:100%}.capture-fields button{width:100%}.toolbar{padding:14px 16px;gap:8px}.toolbar input{flex-basis:100%}.toolbar button{padding:7px 9px;font-size:12px}.layout{grid-template-columns:1fr;min-height:0}.list{max-height:22rem;padding:8px;border-bottom:1px solid var(--line)}.detail{padding:20px 16px;border-left:0}.status{margin:14px 16px 12px}.footer-actions{padding:0 16px 6px}.bottom{padding:10px 16px 16px}.import-preview{padding:0 16px}.name-field{flex-wrap:wrap}.actions select{max-width:100%}th:first-child{width:68px}th:last-child{width:70px}}\n"); shadow.append(style);
+    const panel = el("section", undefined, "panel"); panel.setAttribute("aria-label", "配装档案管理");
+    const head = el("header"), title = el("div"), count = el("span", "0 份档案", "archive-count");
+    title.append(el("h2", "配装档案"), el("p", "保存网页当前配置，随时交回网页恢复")); head.append(title, count);
+    const capture = el("form", undefined, "capture");
+    const mode = el("fieldset"), legend = el("legend", "保存范围"); mode.append(legend);
+    for (const [value, text] of [["solo", "单人"], ["group", "整队"]]) {
+      const l = el("label"), radio = el("input"); radio.type = "radio"; radio.name = "capture-scope"; radio.value = value; radio.checked = value === scope;
+      radio.addEventListener("change", () => { scope = value; ui.source.disabled = value === "group"; ui.sourceLabel.hidden = value === "group"; }); l.append(radio, document.createTextNode(text)); mode.append(l);
     }
-    filterSelect.onchange = () => { filter = filterSelect.value; selected = ""; const first = visibleRows()[0]; if (first) choose(first.id); else render(); };
-    const file = node("input", undefined, "file"); file.type = "file"; file.accept = ".json,application/json";
-    file.setAttribute("aria-label", "导入 JSON 文件");
-    file.onchange = () => { const selectedFile = file.files[0]; file.value = ""; addFile(selectedFile).catch(error => status(error.message, "error")); };
-    toolbar.append(search, filterSelect, button("导入 JSON", () => file.click()),
-      button("备份全部", () => exportRows(rows.filter(row => !row.deletedAt))));
-    const layout = node("div", undefined, "layout"), list = node("nav", undefined, "list"), detail = node("section", undefined, "detail");
-    list.setAttribute("aria-label", "配装列表"); detail.setAttribute("aria-label", "档案详情"); layout.append(list, detail);
-    const importPreview = node("div", undefined, "toolbar"), live = node("div", undefined, "status");
-    live.setAttribute("role", "status"); live.setAttribute("aria-live", "polite"); live.setAttribute("aria-atomic", "true");
-    panel.append(head, toolbar, layout, importPreview, live, node("p", "自动归档一键导入数据；手动调整后的方案请从网站导出单人 JSON 再导入。", "bottom"));
-    shadow.append(style, panel, launcher, file); document.body.append(host);
-    ui = { host, shadow, panel, launcher, launcherText, status: live, list, detail, file,
-      filter: filterSelect, importPreview };
-    const syncTheme = () => host.dataset.theme = document.documentElement.dataset.theme === "light" ||
-      (!document.documentElement.classList.contains("dark") && document.documentElement.dataset.theme !== "dark") ? "light" : "dark";
-    syncTheme(); new MutationObserver(syncTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
-    shadow.addEventListener("keydown", event => {
-      if (event.key === "Escape" && panelOpen) { panelOpen = false; panel.hidden = true; launcher.setAttribute("aria-expanded", "false"); launcher.focus(); event.stopPropagation(); }
+    const sourceLabel = el("label", "来源槽位 "), source = el("select"); source.setAttribute("aria-label", "保存来源玩家");
+    for (let n = 1; n <= 5; n++) { const option = el("option", `玩家 ${n}`); option.value = String(n); source.append(option); } sourceLabel.append(source);
+    const captureName = el("input"); captureName.maxLength = 120; captureName.placeholder = "配置名称（留空自动命名）"; captureName.setAttribute("aria-label", "新配置名称");
+    const captureButton = el("button", "保存网页当前配置", "primary"); captureButton.type = "submit";
+    const fields = el("div", undefined, "capture-fields"); fields.append(captureName, captureButton); capture.append(mode, sourceLabel, fields,
+      el("p", "包含原生导出中的模拟设置。每次保存新建档案，不覆盖已有配置。", "note"));
+    capture.addEventListener("submit", event => { event.preventDefault();
+      const captureScope = scope, slot = source.value, name = captureName.value;
+      task("正在调用网页原生导出，请等待导出完成…", async () => {
+        const text = await nativeCall(() => native.capture(captureScope, slot));
+        const row = await D.prepare(text, { name });
+        const count = await (await db()).addNamed([row]);
+        query = ""; filter = "all"; ui.search.value = ""; ui.filter.value = "all";
+        await refresh();
+        selected = count ? row.id : rows.find(r => !r.deletedAt && r.fingerprint === row.fingerprint && r.name === row.name)?.id || selected;
+        render(); status(count ? `已保存“${row.name}”，包含网页当前${captureScope === "group" ? "整队" : "单人"}配置。` : "同名同内容档案已存在，未重复添加。");
+      }, { focus: () => ui.captureName }).catch(error => status(error.message, "error"));
     });
-    window.addEventListener("hashchange", () => { if (panelOpen) renderDetail(); });
-    // Reload on focus to see committed changes from another tab; no timer or global storage clearing.
-    window.addEventListener("focus", () => { if (panelOpen && !busy) refresh().catch(error => status(error.message, "error")); });
-    status(lastStatus, lastTone); refresh().catch(error => status(error.message, "error"));
+    const toolbar = el("div", undefined, "toolbar"), search = el("input"); search.type = "search"; search.placeholder = "搜索配置或角色"; search.setAttribute("aria-label", "搜索配置或角色");
+    search.addEventListener("input", () => { query = search.value; confirmGroup = false; if (!visibleRows().some(r => r.id === selected)) selected = visibleRows()[0]?.id || ""; renderList(); renderDetail(); });
+    const filterSelect = el("select"); filterSelect.setAttribute("aria-label", "档案分类");
+    for (const [value, text] of [["all", "全部档案"], ["solo", "单人"], ["group", "整队"], ["legacy", "旧版档案"], ["trash", "回收站"]]) {
+      const option = el("option", text); option.value = value; filterSelect.append(option);
+    }
+    filterSelect.addEventListener("change", () => { filter = filterSelect.value; confirmGroup = false; selected = visibleRows()[0]?.id || ""; render(); });
+    const file = el("input", undefined, "file"); file.type = "file"; file.accept = ".json,application/json"; file.setAttribute("aria-label", "导入档案文件");
+    file.addEventListener("change", () => {
+      const chosen = file.files?.[0]; file.value = ""; if (!chosen || busy) return;
+      task("正在校验档案文件…", async () => {
+        pending = null; renderPending(); if (chosen.size > D.MAX_BYTES) throw new Error("文件超过 20 MB，请拆分后重试。");
+        pending = await D.importFile(await chosen.text()); renderPending(); status("文件已校验，请点击“添加到档案库”。");
+      }).catch(error => status(error.message, "error"));
+    });
+    toolbar.append(search, filterSelect, button("导入档案文件", () => file.click()), button("备份全部", () => {
+      download(D.backup(rows.filter(row => !row.deletedAt)), `MWI配装档案备份-${Date.now()}.json`); status("已生成完整备份，不包含回收站档案。");
+    }));
+    const layout = el("div", undefined, "layout"), list = el("div", undefined, "list"), detail = el("div", undefined, "detail");
+    list.setAttribute("aria-label", "档案列表"); detail.setAttribute("aria-label", "档案详情"); layout.append(list, detail);
+    const pendingBox = el("div", undefined, "import-preview"), live = el("div", undefined, "status"); live.setAttribute("role", "status"); live.setAttribute("aria-live", "polite");
+    const foot = el("div", undefined, "footer-actions"), undoButton = button("撤销移入回收站", () => task("正在恢复档案…", async () => {
+      const id = undo; if (!id) return; await (await db()).update(id, { deletedAt: null, updatedAt: Date.now() }); undo = null; await refresh(); status("已撤销，档案恢复。");
+    })); undoButton.hidden = true;
+    const recovery = button("下载网页原有输入备份", () => { download(native.backupDraft(), "MWI网页原有输入备份.json"); status("已生成原输入备份，可打开文件取回单人或整队文本。请核对网页后再重试。"); }); recovery.hidden = true;
+    foot.append(button("重新读取档案", () => task("正在读取本地档案…", async () => { await refresh(); status("档案列表已刷新。"); })), undoButton, recovery);
+    panel.append(head, capture, toolbar, pendingBox, layout, live, foot, el("p", "仅保存在当前网站和浏览器。清除网站数据前，请先备份。", "bottom"));
+    shadow.append(panel, file);
+    ui = { host, shadow, panel, count, list, detail, status: live, search, filter: filterSelect, file, pending: pendingBox,
+      capture: captureButton, captureName, source, sourceLabel, recovery, undo: undoButton, targetSlot: "1" };
+    function syncTheme() { host.dataset.theme = document.documentElement.classList.contains("dark") || document.documentElement.dataset.theme === "dark" ? "dark" : "light"; }
+    syncTheme(); new MutationObserver(syncTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    root.addEventListener("focus", () => { if (host.isConnected && !busy) refresh().catch(error => status(error.message, "error")); });
+    // The Vue route mounts asynchronously and may later replace its section.
+    // Keep one host and move it into the verified home workspace, preserving
+    // archive selection and form drafts across ordinary route changes.
+    let scheduled = false;
+    function attachToHome() {
+      scheduled = false;
+      if (!/^#\/home(?:[/?]|$)/.test(location.hash)) { host.remove(); return; }
+      const sections = [...document.querySelectorAll('main [role="tablist"]')].filter(tabs => {
+        const labels = [...tabs.querySelectorAll('[role="tab"]')].map(tab => tab.textContent || "");
+        return labels.length === 3 && labels.some(text => /战斗|combat/i.test(text)) && labels.some(text => /结果|results/i.test(text));
+      }).map(tabs => tabs.closest("section")).filter(Boolean);
+      const unique = [...new Set(sections)];
+      if (unique.length !== 1) { host.remove(); return; }
+      if (host.parentElement !== unique[0]) unique[0].append(host);
+    }
+    function scheduleAttach() {
+      if (!scheduled) { scheduled = true; root.requestAnimationFrame(attachToHome); }
+    }
+    new MutationObserver(() => {
+      if (!host.isConnected && /^#\/home(?:[/?]|$)/.test(location.hash)) scheduleAttach();
+    }).observe(document.body, { childList: true, subtree: true });
+    root.addEventListener("hashchange", scheduleAttach);
+    attachToHome();
+    render(); task("正在读取本地档案…", async () => { await refresh(); status("选择单人或整队，保存网页当前配置。"); }).catch(error => status(error.message, "error"));
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount, { once: true });
-  else mount();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount, { once: true }); else mount();
 })(window);

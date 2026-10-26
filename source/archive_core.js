@@ -91,7 +91,11 @@
     return all.filter(entry => battleLocations.has((entry?.currentItem || entry?.item || entry)?.itemLocationHrid))
       .map((entry, index) => wrappedItem(entry, `${p}[${index}]`));
   };
-  const actionSlots = dict(/^\/action_types\/combat$/, slots);
+  // Native current-character payloads also use {} for an empty combat slot list.
+  // Preserve that representation; do not coerce it to [], missing, or three filled slots.
+  // Limit this compatibility to native maps: modern player food/drinks remain arrays.
+  const nativeSlots = (v, p) => plain(v) && Object.keys(v).length === 0 ? {} : slots(v, p);
+  const actionSlots = dict(/^\/action_types\/combat$/, nativeSlots);
   const currentSchema = object({ ...common, character: identity, characterItems: equippedItems,
     combatUnit: nullable(object({ combatAbilities: collection(ability) })),
     actionTypeFoodSlotsMap: actionSlots, actionTypeDrinkSlotsMap: actionSlots });

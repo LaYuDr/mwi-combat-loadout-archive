@@ -44,4 +44,10 @@ function shared() {
       abilityCombatTriggersMap: {}, consumableCombatTriggersMap: {} }, marketItemValues: { large: true }
   };
 }
-module.exports = { modern, current, shared, trigger };
+function emptyCombatSlots(name = "测试角色·空消耗品槽", id = 303) {
+  const payload = current(name, id);
+  payload.actionTypeFoodSlotsMap["/action_types/combat"] = {};
+  payload.actionTypeDrinkSlotsMap["/action_types/combat"] = {};
+  return payload;
+}
+module.exports = { modern, current, shared, emptyCombatSlots, trigger };

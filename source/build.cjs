@@ -18,7 +18,7 @@ const header = `// ==UserScript==
 // @supportURL   https://github.com/${config.repository}/issues
 // @updateURL    ${download.replace(/\.user\.js$/, ".meta.js")}
 // @downloadURL  ${download}
-// @description  自动归档成功导入的战斗配装，支持命名、载入、回收站及 JSON 备份。仅在模拟器网站运行。
+// @description  保存网页当前单人或整队配置，通过原生导入导出恢复，支持命名、回收站和 JSON 备份。
 // @match        https://mwi-combatsi-mulator.pages.dev/*
 // @match        https://azhu949.github.io/MWICombatSimulator/*
 // @run-at       document-start
@@ -27,7 +27,7 @@ const header = `// ==UserScript==
 // @license      MIT
 // ==/UserScript==
 `;
-const modules = ["archive_core.js", "archive_store.js", "archive_bridge.js", "archive_app.js"];
+const modules = ["archive_core.js", "native_document.js", "archive_store.js", "native_adapter.js", "archive_app.js"];
 const body = modules.map(name => {
   let source = read(name);
   if (name === "archive_app.js") source = source.replace('"__ARCHIVE_CSS__"', () => JSON.stringify(css));

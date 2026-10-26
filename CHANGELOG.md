@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.0] - 2026-10-26
+
+### Changed
+
+- 重做为网页原生配置存档：完整保存单人/整队 JSON、定向恢复与整队确认；管理区内嵌模拟器主页随文档滚动，保留旧档案兼容并完善异常与键盘焦点处理。
+
 ## [0.1.1] - 2026-10-26
 
 ### Changed
