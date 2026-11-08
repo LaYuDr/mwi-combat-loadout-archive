@@ -8,9 +8,8 @@ const download = config.greasyForkId
   ? `https://update.greasyfork.org/scripts/${config.greasyForkId}/mwi_combat_loadout_archive.user.js`
   : `https://raw.githubusercontent.com/${config.repository}/${config.branch}/${config.scriptFile}`;
 const read = name => fs.readFileSync(path.join(__dirname, name), "utf8");
-const css = read("archive.css");
 const header = `// ==UserScript==
-// @name         MWI 战斗模拟器配装档案助手
+// @name         MWI 配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
 // @version      ${version}
 // @author       柆雨
@@ -18,21 +17,20 @@ const header = `// ==UserScript==
 // @supportURL   https://github.com/${config.repository}/issues
 // @updateURL    ${download.replace(/\.user\.js$/, ".meta.js")}
 // @downloadURL  ${download}
-// @description  保存网页当前单人或整队配置，通过原生导入导出恢复，支持命名、回收站和 JSON 备份。
-// @match        https://mwi-combatsi-mulator.pages.dev/*
-// @match        https://azhu949.github.io/MWICombatSimulator/*
+// @description  保存游戏原生配装的场景子方案，对照装备、技能和消耗品及触发条件，提示玩家手动切换。
+// @match        https://www.milkywayidle.com/game*
+// @match        https://milkywayidle.com/game*
+// @match        https://www.milkywayidlecn.com/game*
+// @match        https://milkywayidlecn.com/game*
 // @run-at       document-start
 // @grant        none
 // @noframes
 // @license      MIT
 // ==/UserScript==
 `;
-const modules = ["archive_core.js", "native_document.js", "archive_store.js", "native_adapter.js",
-  "equipment_catalog.js", "equipment_filter.js", "equipment_filter_ui.js", "archive_app.js"];
-const body = modules.map(name => {
+const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memory.js", "app.js"].map(name => {
   let source = read(name);
-  if (name === "archive_app.js") source = source.replace('"__ARCHIVE_CSS__"', () => JSON.stringify(css));
-  if (name === "equipment_filter_ui.js") source = source.replace('"__EQUIPMENT_FILTER_CSS__"', () => JSON.stringify(read("equipment_filter.css")));
+  if (name === "app.js") source = source.replace('"__SCENE_CSS__"', () => JSON.stringify(read("scene.css")));
   return `// ---- ${name} ----\n${source}`;
 }).join("\n");
 const runtime = "// MWI_COMBAT_LOADOUT_ARCHIVE_RUNTIME\n" + body;
@@ -40,7 +38,7 @@ const output = header + runtime;
 new vm.Script(output);
 const loaderHeader = header
   .replace(/^\/\/ @(?:updateURL|downloadURL).*\n/gm, "")
-  .replace("// @name         MWI 战斗模拟器配装档案助手", "// @name         配装助手 开发加载器")
+  .replace("// @name         MWI 配装助手", "// @name         A配装助手 开发加载器")
   .replace("/loadout-archive\n", "/loadout-archive/dev\n")
   .replace("// @grant        none", "// @grant        GM_xmlhttpRequest\n// @grant        GM_addElement\n// @connect      127.0.0.1");
 const loader = loaderHeader + read("dev_loader.js");

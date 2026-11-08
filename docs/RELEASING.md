@@ -12,6 +12,8 @@ npm run release:verify
 
 GF 正式脚本 ID 为 602254，GitHub 为 LaYuDr/mwi-combat-loadout-archive。GF 从 main/deliverables/mwi_combat_loadout_archive.user.js 同步；release.config.json 统一控制更新元数据。GitHub push 不等于 GF 已同步；使用 release:verify 核验 commit、安装包、版本、正文和更新元数据，不为缓存延迟重复发布。
 
-开发加载器、正式安装包、元数据由同一 source/build.cjs 生成；加载器请求 127.0.0.1:4178/runtime.js，每次重新构建，响应 no-store，构建失败 503。源码更新刷新模拟器生效，服务代码更新须重启 loadout 服务。
+开发加载器、正式安装包、元数据由同一 source/build.cjs 生成；加载器请求 127.0.0.1:4178/runtime.js，每次重新构建，响应 no-store，构建失败 503。源码更新刷新游戏生效，服务代码更新须重启 loadout 服务。
 
 浏览器合成数据验证与个人浏览器安装验收分别记录，不公开玩家存档、预览截图和本地临时文件。
+
+业务运行目标已改为游戏网页。首次迁移须重新安装新版开发加载器以更新 @match；修改 dev_server.cjs 的来源白名单后须重启 loadout 服务。公开渠道仍沿用原有仓库与脚本 ID，本地改动不代表已发布。

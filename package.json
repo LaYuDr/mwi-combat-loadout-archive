@@ -1,8 +1,8 @@
 {
   "name": "mwi-combat-loadout-archive",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
-  "description": "模拟器网站专用的本地配装档案助手",
+  "description": "游戏原生配装的场景子方案保存与手动切换指引",
   "scripts": {
     "dev": "node source/dev_server.cjs",
     "build": "node source/build.cjs",

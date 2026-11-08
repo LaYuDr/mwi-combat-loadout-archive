@@ -1,13 +1,15 @@
 // ==UserScript==
-// @name         配装助手 开发加载器
+// @name         A配装助手 开发加载器
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive/dev
-// @version      0.2.1
+// @version      0.2.2
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
-// @description  保存网页当前单人或整队配置，通过原生导入导出恢复，支持命名、回收站和 JSON 备份。
-// @match        https://mwi-combatsi-mulator.pages.dev/*
-// @match        https://azhu949.github.io/MWICombatSimulator/*
+// @description  保存游戏原生配装的场景子方案，对照装备、技能和消耗品及触发条件，提示玩家手动切换。
+// @match        https://www.milkywayidle.com/game*
+// @match        https://milkywayidle.com/game*
+// @match        https://www.milkywayidlecn.com/game*
+// @match        https://milkywayidlecn.com/game*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addElement
@@ -19,7 +21,7 @@
   "use strict";
   if (globalThis.__MWILoadoutDevLoader) return;
   globalThis.__MWILoadoutDevLoader = true;
-  const fail = reason => console.error("[配装助手] 开发加载失败，请启动本地开发服务后刷新模拟器。", reason);
+  const fail = reason => console.error("[配装助手] 开发加载失败，请启动本地开发服务后刷新游戏。", reason);
   GM_xmlhttpRequest({
     method: "GET", url: "http://127.0.0.1:4178/runtime.js?cacheBust=" + Date.now(),
     anonymous: true, nocache: true, redirect: "error", timeout: 30000,
@@ -29,8 +31,7 @@
       }
       const inject = () => {
         try {
-          // Run in the page world so message.source and the public import bridge
-          // retain exactly the same semantics as the standalone userscript.
+          // Execute the local entry point in the page world.
           GM_addElement(document.documentElement, "script", {
             textContent: response.responseText + "\n//# sourceURL=mwi-loadout-archive-runtime.js"
           }).remove();

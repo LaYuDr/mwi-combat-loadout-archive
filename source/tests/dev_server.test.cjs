@@ -19,6 +19,8 @@ test('server rebuilds allowed paths, denies foreign hosts/origins and does not s
     assert.equal(a.status, 200); assert.equal(a.headers['cache-control'], 'no-store');
     assert.ok(a.body.startsWith('// MWI_COMBAT_LOADOUT_ARCHIVE_RUNTIME\n'));
     await request('/runtime.js?cacheBust=2'); assert.equal(count, 2);
+    assert.equal((await request('/runtime.js', { Origin: 'https://www.milkywayidlecn.com' })).status, 200);
+    assert.equal((await request('/runtime.js', { Origin: 'https://mwi-combatsi-mulator.pages.dev' })).status, 403);
     assert.equal((await request('/runtime.js', { Host: 'evil.example' })).status, 403);
     assert.equal((await request('/runtime.js', { Origin: 'https://evil.example' })).status, 403);
     assert.equal((await request('/../../package.json')).status, 404);

@@ -4,7 +4,7 @@ const { execFileSync } = require("node:child_process");
 const project = path.resolve(__dirname, "..");
 const port = 4178;
 const routes = new Set(["runtime.js", "mwi_combat_loadout_archive.dev.user.js", "mwi_combat_loadout_archive.user.js", "mwi_combat_loadout_archive.meta.js"]);
-const allowedOrigins = new Set(["https://mwi-combatsi-mulator.pages.dev", "https://azhu949.github.io"]);
+const allowedOrigins = new Set(["https://www.milkywayidle.com", "https://milkywayidle.com", "https://www.milkywayidlecn.com", "https://milkywayidlecn.com"]);
 function build() {
   execFileSync(process.execPath, [path.join(__dirname, "build.cjs")], { cwd: project, env: { ...process.env, MWI_ARCHIVE_RELEASE: "0" }, stdio: "pipe", timeout: 30000 });
 }

@@ -61,6 +61,7 @@ export function releaseArchivePath(version) {
 }
 
 export function isAllowedReleasePath(file, version, tracked = false) {
+  if (file.startsWith("source/designs/")) return false;
   if (!tracked && /\.(?:orig|rej)$/.test(file)) return false;
   if (FIXED_RELEASE_PATHS.has(file)) return true;
   if (/^source\/[\w./-]+\.(?:js|cjs|mjs|css)$/.test(file) || /^docs\/[\w./-]+\.md$/.test(file)) return true;
@@ -295,7 +296,17 @@ async function verifyGitHub(version) {
   verifyRemoteHead(head);
   for (const file of [CONFIG.scriptFile, CONFIG.scriptFile.replace(/\.user\.js$/, ".meta.js")]) {
     const expected = fs.readFileSync(path.join(ROOT, file), "utf8");
-    const actual = await fetchText(`https://raw.githubusercontent.com/${CONFIG.repository}/${head}/${file}`);
+    let actual;
+    try {
+      actual = await fetchText(`https://raw.githubusercontent.com/${CONFIG.repository}/${head}/${file}`);
+    } catch (error) {
+      // Some networks cannot reach the raw-file host. Verify the same immutable
+      // commit via GitHub's official Contents API, without weakening comparison.
+      console.log(`GitHub 原始文件连接失败，改用官方内容接口核验：${file}`);
+      const data = JSON.parse(await fetchText(`https://api.github.com/repos/${CONFIG.repository}/contents/${file}?ref=${head}`));
+      if (data.encoding !== "base64" || typeof data.content !== "string") throw new Error(`GitHub 内容接口返回格式无效：${file}`);
+      actual = Buffer.from(data.content, "base64").toString("utf8");
+    }
     if (expected !== actual || extractUserscriptVersion(actual) !== version) throw new Error(`GitHub 内容不一致：${file}`);
   }
   console.log(`GitHub commit、安装包和更新元数据核验通过：${head}`);

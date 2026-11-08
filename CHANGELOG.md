@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.2] - 2026-11-08
+
+### Changed
+
+- 迁移至游戏原生配装页；开放战斗、生活和所有技能子方案，新增生活工具与目标候选项高亮、精简界面及方案菜单，并支持各行动项目的配装选择记忆。
+
 ## [0.2.1] - 2026-10-26
 
 ### Changed
