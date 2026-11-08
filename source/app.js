@@ -103,7 +103,7 @@
       if (pending.action === "remove") { undo = row; if (selectedId === row.id) selectedId = null; }
       confirmation = null; await reload();
       if (mounted !== ui) return;
-      message(pending.action === "remove" ? `已移除“${row.name}”` : `已${pending.action === "rename" ? "改名" : "更新"}“${row.name}”`);
+      message(pending.action === "snapshot" ? "" : pending.action === "remove" ? `已移除“${row.name}”` : `已改名“${row.name}”`);
     });
     if (success) (pending.action === "snapshot" ? mounted.update : mounted.add).focus();
   }

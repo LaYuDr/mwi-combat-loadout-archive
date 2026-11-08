@@ -56,7 +56,9 @@ module.exports = async function checkSceneTypes(browser, content, fixture, pass)
       // Updating retains the parent type and all raw fields, then survives a page reload.
       await host.locator(".header").getByRole("button", { name: "更新", exact: true }).click();
       await host.getByRole("button", { name: "更新方案", exact: true }).click();
-      await status.filter({ hasText: "已更新" }).waitFor(); await summary.filter({ hasText: "配装已一致" }).waitFor();
+      await host.locator(".header").getByRole("button", { name: "更新", exact: true }).waitFor();
+      await summary.filter({ hasText: "配装已一致" }).waitFor();
+      assert.equal(await status.isVisible(), false);
       await page.reload(); await open(changed);
       await host.getByRole("button", { name: "效率", exact: true }).click();
       await summary.filter({ hasText: "配装已一致" }).waitFor();

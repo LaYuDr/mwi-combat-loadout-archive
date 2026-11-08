@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.6] - 2026-11-08
+
+### Changed
+
+- 移除子方案更新成功后的已更新提示及空白占位，保留配装一致状态、错误提示和其他操作反馈。
+
 ## [0.2.5] - 2026-11-08
 
 ### Changed

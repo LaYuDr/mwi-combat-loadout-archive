@@ -270,7 +270,9 @@ async function main() {
     await update.scrollIntoViewIfNeeded();
     const clickBox = await update.boundingBox();
     await page.mouse.dblclick(clickBox.x + clickBox.width / 2, clickBox.y + clickBox.height / 2, { delay: 80 });
-    await status.filter({ hasText: "已更新" }).waitFor(); await summary.filter({ hasText: "配装已一致" }).waitFor();
+    await host.locator(".header").getByRole("button", { name: "更新", exact: true }).waitFor();
+    await summary.filter({ hasText: "配装已一致" }).waitFor();
+    assert.equal(await status.isVisible(), false);
     const afterUpdate = await page.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope)).find(row => row.name === "远程单人·改名"));
     assert.deepEqual(afterUpdate.snapshot.raw, changed);
     pass("desktop/mobile update confirmation keeps the original button bounds, cancel sits to its left, and two clicks at one coordinate save the selected scene");
