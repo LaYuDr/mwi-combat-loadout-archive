@@ -1,6 +1,7 @@
 "use strict";
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm"), crypto = require("node:crypto");
 const project = path.resolve(__dirname, "..");
+const usageBuild = require("./usage-build.js");
 const { version } = require(path.join(project, "package.json"));
 const config = require(path.join(project, "release.config.json"));
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Invalid version");
@@ -23,7 +24,9 @@ const header = `// ==UserScript==
 // @match        https://www.milkywayidlecn.com/game*
 // @match        https://milkywayidlecn.com/game*
 // @run-at       document-start
-// @grant        none
+${usageBuild.metadata}// @grant        GM_addElement
+// @grant        unsafeWindow
+// @sandbox      raw
 // @noframes
 // @license      MIT
 // ==/UserScript==
@@ -34,13 +37,15 @@ const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memo
   return `// ---- ${name} ----\n${source}`;
 }).join("\n");
 const runtime = "// MWI_COMBAT_LOADOUT_ARCHIVE_RUNTIME\n" + body;
-const output = header + runtime;
+const usage = usageBuild.buildUsage(project, "source/runtime/usage-client.js", "mwi_loadout", "配装助手", version);
+const output = header + usage + runtime;
 new vm.Script(output);
 const loaderHeader = header
+  .replace(usageBuild.metadata, "")
   .replace(/^\/\/ @(?:updateURL|downloadURL).*\n/gm, "")
   .replace("// @name         MWI 配装助手", "// @name         A配装助手 开发加载器")
   .replace("/loadout-archive\n", "/loadout-archive/dev\n")
-  .replace("// @grant        none", "// @grant        GM_xmlhttpRequest\n// @grant        GM_addElement\n// @connect      127.0.0.1");
+  .replace("// @grant        GM_addElement\n// @grant        unsafeWindow\n// @sandbox      raw", "// @grant        GM_xmlhttpRequest\n// @grant        GM_addElement\n// @connect      127.0.0.1");
 const loader = loaderHeader + read("dev_loader.js");
 const outputs = { "mwi_combat_loadout_archive.user.js": output,
   "mwi_combat_loadout_archive.meta.js": header, "runtime.js": runtime, "mwi_combat_loadout_archive.dev.user.js": loader };

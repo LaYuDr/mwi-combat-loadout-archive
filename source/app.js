@@ -226,6 +226,13 @@
     summaryControl.append(summary);
     const list = el("ol", null, { "aria-label": "需要手动修改的项目" }); differences.append(summaryControl, list);
     section.append(header, choices, menu, form, confirm, notice, differences);
+    if (root.__layuUsage_mwi_loadout) {
+      const settings = el("details", null);
+      settings.append(el("summary", "统计"), el("slot", null, { name: "usage-settings" }));
+      // Keep the shared client's settings host in light DOM so its observer can find it.
+      host.append(el("div", null, { slot: "usage-settings", "data-layu-usage-settings": "mwi_loadout", lang: "zh-CN" }));
+      section.append(settings);
+    }
     shadow.append(section); ctx.details.insertBefore(host, ctx.setup);
     shadow.addEventListener("keydown", event => {
       if (event.key === "Escape" && !busy) { setMenu(false); closeEditor(); }
@@ -384,7 +391,7 @@
   }
   function start() {
     app.ActionMemory.start();
-    const style = el("style", '[data-mwi-scene-change] { outline: 2px solid #ffd27a !important; outline-offset: 3px !important; } [data-mwi-scene-target] { outline: 3px solid #ffd27a !important; outline-offset: -3px !important; box-shadow: inset 0 0 0 5px #171822 !important; }');
+    const style = el("style", '[data-mwi-scene-change] { outline: 2px solid #ffd27a !important; outline-offset: 3px !important; } [data-mwi-scene-target] { outline: 3px solid #70b7ff !important; outline-offset: -3px !important; box-shadow: inset 0 0 0 5px #171822 !important; }');
     style.id = "mwi-loadout-scenes-highlight-style"; document.head.append(style);
     const panelSelector = '[class*="LoadoutsPanel_loadoutsPanel__"]';
     const ownedSelector = '#mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';

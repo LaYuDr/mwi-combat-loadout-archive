@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.3] - 2026-11-08
+
+### Changed
+
+- 目标装备和技能候选项改用蓝色内描边；接入与其他助手一致的安装及活跃统计，提供关闭开关与隐私说明，开发加载器不参与统计。
+
 ## [0.2.2] - 2026-11-08
 
 ### Changed
