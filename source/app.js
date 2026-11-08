@@ -90,7 +90,7 @@
     const row = action === "snapshot" ? selected() : activeRows().find(row => row.id === menuId);
     if (!row) return;
     confirmation = { action, row }; mounted.form.hidden = true; setMenu(false); render();
-    (action === "rename" ? mounted.rename : mounted.commit).focus();
+    (action === "snapshot" ? mounted.update : action === "rename" ? mounted.rename : mounted.commit).focus();
   }
   async function commitAction() {
     const pending = confirmation;
@@ -105,7 +105,7 @@
       if (mounted !== ui) return;
       message(pending.action === "remove" ? `已移除“${row.name}”` : `已${pending.action === "rename" ? "改名" : "更新"}“${row.name}”`);
     });
-    if (success) mounted.add.focus();
+    if (success) (pending.action === "snapshot" ? mounted.update : mounted.add).focus();
   }
   async function restore() {
     const row = undo;
@@ -171,7 +171,9 @@
     confirmation = null; setMenu(false); mounted.form.hidden = false; render(); mounted.name.focus();
   }
   function closeEditor() {
-    confirmation = null; mounted.form.hidden = true; render(); mounted.add.focus();
+    const updating = confirmation?.action === "snapshot";
+    confirmation = null; mounted.form.hidden = true; render();
+    (updating ? mounted.update : mounted.add).focus();
   }
   function stopComparison() {
     selectedId = null; confirmation = null; setMenu(false); render(); message(""); mounted.add.focus();
@@ -182,8 +184,10 @@
     const section = el("section", null, { "aria-labelledby": "scene-title" });
     const header = el("div", null, { class: "header" });
     const heading = el("h2", "子方案", { id: "scene-title" });
-    const update = button("更新", () => requestAction("snapshot"));
-    header.append(heading, update);
+    const update = button("更新", () => confirmation?.action === "snapshot" ? commitAction() : requestAction("snapshot"), { class: "update-button" });
+    const cancelUpdate = button("取消", closeEditor, { hidden: "" });
+    const headerActions = el("div", null, { class: "header-actions" });
+    headerActions.append(cancelUpdate, update); header.append(heading, headerActions);
     const choices = el("div", null, { class: "choices", "aria-label": "已保存的子方案" });
     const add = iconButton("add", "新建子方案", showNew); choices.append(add); bindMenu(add, null);
     const form = el("form", null, { class: "editor", hidden: "" }), label = el("label", "新建子方案", { for: "scene-name" });
@@ -240,7 +244,7 @@
     shadow.addEventListener("focusout", event => {
       if (!host.matches(":focus-within") && !shadow.contains(event.relatedTarget)) setMenu(false);
     });
-    mounted = { host, shadow, choices, add, menu, form, name, save, cancelNew, update, renameButton, remove, stop, undoButton,
+    mounted = { host, shadow, choices, add, menu, form, name, save, cancelNew, update, cancelUpdate, renameButton, remove, stop, undoButton,
       confirm, confirmText, rename, commit, cancel, notice, status, retry, differences, summary, list, exportButton, importButton };
     context = ctx; rows = []; selectedId = null; undo = null; confirmation = null;
     render();
@@ -313,6 +317,11 @@
     if (!active.length) ui.choices.insertBefore(el("p", "暂无方案", { class: "empty" }), ui.add);
     ui.save.disabled = ui.add.disabled = busy || Boolean(failure);
     ui.cancelNew.disabled = busy;
+    const updating = confirmation?.action === "snapshot";
+    ui.update.textContent = updating ? "更新方案" : "更新";
+    ui.update.classList.toggle("primary", updating);
+    ui.update.title = updating ? `更新“${confirmation.row.name}”？` : "";
+    ui.cancelUpdate.hidden = !updating; ui.cancelUpdate.disabled = busy;
     ui.update.disabled = busy || !row || Boolean(failure);
     const menuRow = active.find(entry => entry.id === menuId);
     for (const node of [ui.renameButton, ui.remove]) node.disabled = busy || !menuRow || Boolean(failure);
@@ -322,7 +331,7 @@
     ui.undoButton.hidden = !undo; ui.undoButton.disabled = busy || Boolean(failure);
     ui.notice.hidden = !undo && !ui.status.textContent;
     ui.retry.disabled = busy;
-    ui.confirm.hidden = !confirmation;
+    ui.confirm.hidden = !confirmation || updating;
     if (confirmation) {
       const pending = confirmation;
       ui.confirmText.textContent = pending.action === "snapshot" ? `更新“${pending.row.name}”？` :

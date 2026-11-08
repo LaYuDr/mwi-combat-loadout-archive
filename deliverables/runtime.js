@@ -563,7 +563,7 @@
   if (app.started) return;
   app.started = true;
   const { Core, Adapter, Store } = app;
-  const css = ":host { display: block; width: 21.25rem; max-width: 100%; min-width: 0; text-align: left; color: #eeeef5; font: inherit; --scene-surface: #202130; --scene-line: #555a7e; --scene-primary: #465bb3; --scene-muted: #c3c6db; --scene-warn: #ffd27a; }\n* { box-sizing: border-box; }\nsection { overflow-wrap: anywhere; margin: 12px 0 16px; padding: 12px 0; border-top: 1px solid var(--scene-line); border-bottom: 1px solid var(--scene-line); }\nh2 { margin: 0; font-size: 1em; font-weight: 600; }\np { margin: 0; line-height: 1.5; }\n.header, .actions, .notice, .change-title { display: flex; align-items: center; gap: 8px; }\n.header { justify-content: space-between; margin-bottom: 10px; }\n.choices { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }\nbutton, input { font: inherit; border-radius: 5px; min-height: 36px; }\nbutton { color: inherit; background: var(--scene-surface); border: 1px solid var(--scene-line); padding: 6px 10px; cursor: pointer; text-align: start; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }\nbutton:hover { background: #30344e; }\nbutton[aria-pressed=\"true\"], button.primary { background: var(--scene-primary); border-color: #8a9ce8; }\nbutton:disabled { opacity: .55; cursor: not-allowed; }\nbutton:focus-visible, input:focus-visible, summary:focus-visible, li:focus { outline: 2px solid #c0ccff; outline-offset: 3px; }\n.icon-button { width: 36px; flex: 0 0 36px; padding: 8px; display: inline-grid; place-items: center; }\nsvg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }\ninput { color: inherit; background: #171822; border: 1px solid var(--scene-line); padding: 8px; min-width: 0; width: 100%; caret-color: #c0ccff; }\ninput::placeholder { color: var(--scene-muted); }\n.editor { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; margin: 12px 0; }\n.editor label { font-size: .9em; }\n.actions { justify-content: flex-end; }\n.menu { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; margin: 10px 0; padding: 5px; background: var(--scene-surface); border: 1px solid var(--scene-line); border-radius: 5px; }\n.menu button { background: transparent; border-color: transparent; }\n.menu button:hover { background: #30344e; }\n.notice { margin-top: 10px; flex-wrap: wrap; font-size: .85em; color: var(--scene-muted); }\n#status { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }\n#status.error, .pending { color: var(--scene-warn); }\n.notice button { min-height: 30px; padding: 3px 8px; }\n.empty, .muted { color: var(--scene-muted); font-size: .85em; }\n.empty { flex: 1; }\n#scene-differences { margin-top: 10px; }\nsummary { padding: 7px 0; cursor: pointer; min-height: 36px; font-size: .9em; }\n#summary { font-weight: 500; }\nol { list-style: none; padding: 0; margin: 6px 0 0; }\nli { padding: 10px 0; border-bottom: 1px solid #3d405c; overflow-wrap: anywhere; }\nli:last-child { border-bottom: 0; padding-bottom: 0; }\n.change-title { flex-wrap: wrap; margin-bottom: 5px; font-size: .9em; }\n.change-title strong { flex: 1; font-weight: 500; }\n.change-title button { min-height: 30px; border: 0; background: transparent; padding: 3px 0 3px 8px; color: var(--scene-muted); }\n.values { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 8px; line-height: 1.5; font-size: .9em; }\n.values .current { color: var(--scene-muted); }\n.values .goal { color: var(--scene-warn); }\npre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85em; padding: 10px; background: #171822; border-radius: 5px; }\n:host([data-mwi-scene-marker]) { width: 100%; max-width: 100%; margin-top: 5px; color: var(--scene-warn); font: 11px/1.4 -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif; }\n.target-markers { display: grid; grid-template-columns: minmax(0,1fr); gap: 3px; overflow-wrap: anywhere; }\n.target-value { display: block; }\n.target-condition { color: var(--scene-warn); border: 0; border-radius: 2px; padding: 3px 0; min-height: 26px; width: 100%; font: inherit; text-align: start; background: transparent; text-decoration: underline; text-underline-offset: 3px; }\n[hidden] { display: none !important; }\n::selection { background: #465bb3; color: #fff; }\n* { scrollbar-width: thin; scrollbar-color: var(--scene-line) #171822; }\n@media (max-width: 520px) { .choices button { flex-grow: 1; } .choices .icon-button { flex-grow: 0; } }\n@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }\n\n.choices button { -webkit-touch-callout: none; user-select: none; }\n";
+  const css = ":host { display: block; width: 21.25rem; max-width: 100%; min-width: 0; text-align: left; color: #eeeef5; font: inherit; --scene-surface: #202130; --scene-line: #555a7e; --scene-primary: #465bb3; --scene-muted: #c3c6db; --scene-warn: #ffd27a; }\n* { box-sizing: border-box; }\nsection { overflow-wrap: anywhere; margin: 12px 0 16px; padding: 12px 0; border-top: 1px solid var(--scene-line); border-bottom: 1px solid var(--scene-line); }\nh2 { margin: 0; font-size: 1em; font-weight: 600; }\np { margin: 0; line-height: 1.5; }\n.header, .actions, .notice, .change-title { display: flex; align-items: center; gap: 8px; }\n.header { justify-content: space-between; margin-bottom: 10px; }\n.header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }\n.header-actions .update-button { width: calc(4em + 22px); flex: 0 0 auto; white-space: nowrap; text-align: center; }\n.choices { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }\nbutton, input { font: inherit; border-radius: 5px; min-height: 36px; }\nbutton { color: inherit; background: var(--scene-surface); border: 1px solid var(--scene-line); padding: 6px 10px; cursor: pointer; text-align: start; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }\nbutton:hover { background: #30344e; }\nbutton[aria-pressed=\"true\"], button.primary { background: var(--scene-primary); border-color: #8a9ce8; }\nbutton:disabled { opacity: .55; cursor: not-allowed; }\nbutton:focus-visible, input:focus-visible, summary:focus-visible, li:focus { outline: 2px solid #c0ccff; outline-offset: 3px; }\n.icon-button { width: 36px; flex: 0 0 36px; padding: 8px; display: inline-grid; place-items: center; }\nsvg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }\ninput { color: inherit; background: #171822; border: 1px solid var(--scene-line); padding: 8px; min-width: 0; width: 100%; caret-color: #c0ccff; }\ninput::placeholder { color: var(--scene-muted); }\n.editor { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; margin: 12px 0; }\n.editor label { font-size: .9em; }\n.actions { justify-content: flex-end; }\n.menu { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; margin: 10px 0; padding: 5px; background: var(--scene-surface); border: 1px solid var(--scene-line); border-radius: 5px; }\n.menu button { background: transparent; border-color: transparent; }\n.menu button:hover { background: #30344e; }\n.notice { margin-top: 10px; flex-wrap: wrap; font-size: .85em; color: var(--scene-muted); }\n#status { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }\n#status.error, .pending { color: var(--scene-warn); }\n.notice button { min-height: 30px; padding: 3px 8px; }\n.empty, .muted { color: var(--scene-muted); font-size: .85em; }\n.empty { flex: 1; }\n#scene-differences { margin-top: 10px; }\nsummary { padding: 7px 0; cursor: pointer; min-height: 36px; font-size: .9em; }\n#summary { font-weight: 500; }\nol { list-style: none; padding: 0; margin: 6px 0 0; }\nli { padding: 10px 0; border-bottom: 1px solid #3d405c; overflow-wrap: anywhere; }\nli:last-child { border-bottom: 0; padding-bottom: 0; }\n.change-title { flex-wrap: wrap; margin-bottom: 5px; font-size: .9em; }\n.change-title strong { flex: 1; font-weight: 500; }\n.change-title button { min-height: 30px; border: 0; background: transparent; padding: 3px 0 3px 8px; color: var(--scene-muted); }\n.values { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 8px; line-height: 1.5; font-size: .9em; }\n.values .current { color: var(--scene-muted); }\n.values .goal { color: var(--scene-warn); }\npre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85em; padding: 10px; background: #171822; border-radius: 5px; }\n:host([data-mwi-scene-marker]) { width: 100%; max-width: 100%; margin-top: 5px; color: var(--scene-warn); font: 11px/1.4 -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif; }\n.target-markers { display: grid; grid-template-columns: minmax(0,1fr); gap: 3px; overflow-wrap: anywhere; }\n.target-value { display: block; }\n.target-condition { color: var(--scene-warn); border: 0; border-radius: 2px; padding: 3px 0; min-height: 26px; width: 100%; font: inherit; text-align: start; background: transparent; text-decoration: underline; text-underline-offset: 3px; }\n[hidden] { display: none !important; }\n::selection { background: #465bb3; color: #fff; }\n* { scrollbar-width: thin; scrollbar-color: var(--scene-line) #171822; }\n@media (max-width: 520px) { .choices button { flex-grow: 1; } .choices .icon-button { flex-grow: 0; } }\n@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }\n\n.choices button { -webkit-touch-callout: none; user-select: none; }\n";
   let mounted = null, context = null, rows = [], selectedId = null, busy = false, undo = null, confirmation = null;
   let last = "", loading = 0, failure = "", highlighted = [], unresolved = [];
   const markers = new Map();
@@ -648,7 +648,7 @@
     const row = action === "snapshot" ? selected() : activeRows().find(row => row.id === menuId);
     if (!row) return;
     confirmation = { action, row }; mounted.form.hidden = true; setMenu(false); render();
-    (action === "rename" ? mounted.rename : mounted.commit).focus();
+    (action === "snapshot" ? mounted.update : action === "rename" ? mounted.rename : mounted.commit).focus();
   }
   async function commitAction() {
     const pending = confirmation;
@@ -663,7 +663,7 @@
       if (mounted !== ui) return;
       message(pending.action === "remove" ? `已移除“${row.name}”` : `已${pending.action === "rename" ? "改名" : "更新"}“${row.name}”`);
     });
-    if (success) mounted.add.focus();
+    if (success) (pending.action === "snapshot" ? mounted.update : mounted.add).focus();
   }
   async function restore() {
     const row = undo;
@@ -729,7 +729,9 @@
     confirmation = null; setMenu(false); mounted.form.hidden = false; render(); mounted.name.focus();
   }
   function closeEditor() {
-    confirmation = null; mounted.form.hidden = true; render(); mounted.add.focus();
+    const updating = confirmation?.action === "snapshot";
+    confirmation = null; mounted.form.hidden = true; render();
+    (updating ? mounted.update : mounted.add).focus();
   }
   function stopComparison() {
     selectedId = null; confirmation = null; setMenu(false); render(); message(""); mounted.add.focus();
@@ -740,8 +742,10 @@
     const section = el("section", null, { "aria-labelledby": "scene-title" });
     const header = el("div", null, { class: "header" });
     const heading = el("h2", "子方案", { id: "scene-title" });
-    const update = button("更新", () => requestAction("snapshot"));
-    header.append(heading, update);
+    const update = button("更新", () => confirmation?.action === "snapshot" ? commitAction() : requestAction("snapshot"), { class: "update-button" });
+    const cancelUpdate = button("取消", closeEditor, { hidden: "" });
+    const headerActions = el("div", null, { class: "header-actions" });
+    headerActions.append(cancelUpdate, update); header.append(heading, headerActions);
     const choices = el("div", null, { class: "choices", "aria-label": "已保存的子方案" });
     const add = iconButton("add", "新建子方案", showNew); choices.append(add); bindMenu(add, null);
     const form = el("form", null, { class: "editor", hidden: "" }), label = el("label", "新建子方案", { for: "scene-name" });
@@ -798,7 +802,7 @@
     shadow.addEventListener("focusout", event => {
       if (!host.matches(":focus-within") && !shadow.contains(event.relatedTarget)) setMenu(false);
     });
-    mounted = { host, shadow, choices, add, menu, form, name, save, cancelNew, update, renameButton, remove, stop, undoButton,
+    mounted = { host, shadow, choices, add, menu, form, name, save, cancelNew, update, cancelUpdate, renameButton, remove, stop, undoButton,
       confirm, confirmText, rename, commit, cancel, notice, status, retry, differences, summary, list, exportButton, importButton };
     context = ctx; rows = []; selectedId = null; undo = null; confirmation = null;
     render();
@@ -871,6 +875,11 @@
     if (!active.length) ui.choices.insertBefore(el("p", "暂无方案", { class: "empty" }), ui.add);
     ui.save.disabled = ui.add.disabled = busy || Boolean(failure);
     ui.cancelNew.disabled = busy;
+    const updating = confirmation?.action === "snapshot";
+    ui.update.textContent = updating ? "更新方案" : "更新";
+    ui.update.classList.toggle("primary", updating);
+    ui.update.title = updating ? `更新“${confirmation.row.name}”？` : "";
+    ui.cancelUpdate.hidden = !updating; ui.cancelUpdate.disabled = busy;
     ui.update.disabled = busy || !row || Boolean(failure);
     const menuRow = active.find(entry => entry.id === menuId);
     for (const node of [ui.renameButton, ui.remove]) node.disabled = busy || !menuRow || Boolean(failure);
@@ -880,7 +889,7 @@
     ui.undoButton.hidden = !undo; ui.undoButton.disabled = busy || Boolean(failure);
     ui.notice.hidden = !undo && !ui.status.textContent;
     ui.retry.disabled = busy;
-    ui.confirm.hidden = !confirmation;
+    ui.confirm.hidden = !confirmation || updating;
     if (confirmation) {
       const pending = confirmation;
       ui.confirmText.textContent = pending.action === "snapshot" ? `更新“${pending.row.name}”？` :

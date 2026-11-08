@@ -1,6 +1,6 @@
 {
   "name": "mwi-combat-loadout-archive",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "游戏原生配装的场景子方案保存与手动切换指引",
   "scripts": {

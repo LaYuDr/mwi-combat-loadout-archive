@@ -249,8 +249,31 @@ async function main() {
     const beforeUpdate = await page.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope)).find(row => row.name === "远程单人·改名"));
     assert.deepEqual(beforeUpdate.snapshot.raw, original);
     await host.getByRole("button", { name: "取消", exact: true }).click();
-    await action("更新"); await host.getByRole("button", { name: "更新方案", exact: true }).click();
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1080 });
+      const update = host.locator(".header").getByRole("button", { name: "更新", exact: true });
+      await update.scrollIntoViewIfNeeded();
+      const before = await update.boundingBox();
+      await update.click();
+      const confirmUpdate = host.locator(".header").getByRole("button", { name: "更新方案", exact: true });
+      const after = await confirmUpdate.boundingBox();
+      for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(before[key] - after[key]) < 1, `${width}px ${key}`);
+      const cancelBox = await host.locator(".header").getByRole("button", { name: "取消", exact: true }).boundingBox();
+      assert.ok(cancelBox.x + cancelBox.width <= after.x);
+      assert.equal(await host.getByText('更新“远程单人·改名”？', { exact: true }).isVisible(), false);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await host.screenshot({ path: path.join(root, '.impeccable/review', `update-confirm-${width}.png`) });
+      await host.locator(".header").getByRole("button", { name: "取消", exact: true }).click();
+    }
+    await page.setViewportSize({ width: 1440, height: 1080 });
+    const update = host.locator(".header").getByRole("button", { name: "更新", exact: true });
+    await update.scrollIntoViewIfNeeded();
+    const clickBox = await update.boundingBox();
+    await page.mouse.dblclick(clickBox.x + clickBox.width / 2, clickBox.y + clickBox.height / 2, { delay: 80 });
     await status.filter({ hasText: "已更新" }).waitFor(); await summary.filter({ hasText: "配装已一致" }).waitFor();
+    const afterUpdate = await page.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope)).find(row => row.name === "远程单人·改名"));
+    assert.deepEqual(afterUpdate.snapshot.raw, changed);
+    pass("desktop/mobile update confirmation keeps the original button bounds, cancel sits to its left, and two clicks at one coordinate save the selected scene");
     await action("移除"); await host.getByRole("button", { name: "移除", exact: true }).click();
     await status.filter({ hasText: "已移除" }).waitFor(); assert.equal(await host.locator(".choices button[data-scene-id]").count(), 2);
     assert.equal(await host.getByRole("button", { name: "新建子方案" }).evaluate(node => node.getRootNode().activeElement === node), true);

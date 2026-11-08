@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.5] - 2026-11-08
+
+### Changed
+
+- 更新确认改为原位操作：首次点击后原按钮变为更新方案，取消显示在左侧，按钮位置和宽高保持不变，可连续点击同一位置完成保存；保留首次选中的目标方案及取消操作。
+
 ## [0.2.4] - 2026-11-08
 
 ### Changed
