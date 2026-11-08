@@ -38,6 +38,12 @@
       "path": "releases/v0.2/mwi_combat_loadout_archive-v0.2.3.user.js",
       "sizeBytes": 84027,
       "sha256": "bd195586cf3a4e3decb152be491c49e83e3583c276bc7f328d73d481d6aa7d1e"
+    },
+    {
+      "version": "0.2.4",
+      "path": "releases/v0.2/mwi_combat_loadout_archive-v0.2.4.user.js",
+      "sizeBytes": 84147,
+      "sha256": "ca81b2c2ebd025c0cbb3eb5a5fb5e871997d8f0e670eb237d1312b43e443bd18"
     }
   ]
 }

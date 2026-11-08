@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.4] - 2026-11-08
+
+### Changed
+
+- 修复食物、饮料选择列表缺少目标高亮的问题；沿用蓝色内描边，按当前槽位匹配目标物品，换对、关闭列表或结束对比后清除高亮。
+
 ## [0.2.3] - 2026-11-08
 
 ### Changed

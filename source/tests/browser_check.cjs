@@ -96,6 +96,7 @@ async function main() {
     [changed.abilityMap[1], changed.abilityMap[2]] = [changed.abilityMap[2], changed.abilityMap[1]];
     changed.abilityCombatTriggersMap["/abilities/shot"][0].value = 25;
     changed.consumableCombatTriggersMap["/items/yogurt"][0].value = 75;
+    changed.foodItemHrids[0] = "/items/apple";
     changed.wearableMap["/item_locations/head"] = ""; changed.drinkItemHrids[0] = "/items/tea";
     await manual(changed);
     await summary.filter({ hasText: "项差异" }).waitFor();
@@ -121,13 +122,25 @@ async function main() {
       picker('ability', 1, [{ abilityHrid: '/abilities/heal' }, { abilityHrid: '/abilities/shot' }]);
       picker('equipment', 'head', [{ itemHrid: '/items/hood', enhancementLevel: 7 }, { itemHrid: '/items/hood', enhancementLevel: 8 }, { itemHrid: '/items/bow', enhancementLevel: 8 }]);
       picker('ability', 4, [{ abilityHrid: '/abilities/shot' }]);
+      picker('food', 0, [{ itemHrid: '/items/apple' }, { itemHrid: '/items/yogurt' }]);
+      picker('drink', 0, [{ itemHrid: '/items/tea' }, { itemHrid: '/items/coffee' }]);
+      picker('food', 1, [{ itemHrid: '/items/yogurt' }]);
       window.closeFixturePickers = () => { for (const node of fixturePickers) node.remove(); panelFiber.child = previous; };
     });
-    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 2);
-    assert.deepEqual(await page.locator('[data-mwi-scene-target]').allTextContents(), ['ability1', 'equipment1']);
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 4);
+    assert.deepEqual(await page.locator('[data-mwi-scene-target]').allTextContents(), ['ability1', 'equipment1', 'food1', 'drink1']);
+    assert.equal(await page.locator('[data-mwi-scene-target]').evaluateAll(nodes => nodes.every(node => getComputedStyle(node).outlineColor === 'rgb(112, 183, 255)')), true);
+    assert.equal(await page.evaluate(() => MWILoadoutScenes.Adapter.pickerTargets(MWILoadoutScenes.Adapter.current(), [{ kind: 'food', slot: 1, to: null }]).length), 0);
+    // The picker stays open while native data catches up: a trigger-only difference
+    // must not keep the already-correct food candidate highlighted.
+    await page.evaluate(() => { controller.props.characterLoadoutDict[12].foodItemHrids[0] = original.foodItemHrids[0]; });
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 3);
+    assert.deepEqual(await page.locator('[data-mwi-scene-target]').allTextContents(), ['ability1', 'equipment1', 'drink1']);
+    await page.evaluate(() => { controller.props.characterLoadoutDict[12].foodItemHrids[0] = '/items/apple'; });
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 4);
     await page.evaluate(() => closeFixturePickers());
     await page.waitForFunction(() => fixturePickers.every(list => !list.querySelector('[data-mwi-scene-target]')));
-    pass('portal pickers highlight the target skill and exact enhancement only, ignore unrelated slots, and clean up after closing');
+    pass('portal pickers highlight target skills, exact equipment, food and drinks in blue; ignore unrelated/empty targets and clear corrected food or closed pickers');
     const changes = await host.locator("li").count(); assert.ok(changes >= 6);
     assert.ok(await page.locator("[data-mwi-scene-change]").count() >= 5);
     assert.equal(await host.locator("#scene-differences").getAttribute("open"), null);

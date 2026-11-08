@@ -118,8 +118,9 @@
       const ability = list.className.includes("AbilitySlot_");
       const listFiber = hostFiber(list, hostFiber(ctx.panel)), ancestors = new Set(); let owner = listFiber;
       for (let i = 0; owner && i < 80; i++, owner = owner.return) ancestors.add(owner.stateNode);
-      const change = changes.find(change => change.to && (ability ? change.kind === "ability" : change.kind === "equipment") && ancestors.has(target(ctx, change)));
+      const change = changes.find(change => change.to && (ability ? change.kind === "ability" : ["equipment", "food", "drink"].includes(change.kind)) && ancestors.has(target(ctx, change)));
       if (!change) continue;
+      const itemTarget = change.kind === "equipment" ? change.to : { itemHrid: change.to };
       const hosts = new Map(), queue = listFiber?.child ? [listFiber.child] : [], visited = new Set();
       for (let count = 0; queue.length && count < 4000; count++) {
         const fiber = queue.pop(); if (!fiber || visited.has(fiber)) continue; visited.add(fiber);
@@ -132,8 +133,8 @@
         for (let count = 0; pending.length && count < 400; count++) {
           const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue; seen.add(fiber);
           const props = fiber.memoizedProps || fiber.stateNode?.props;
-          if (props && (ability ? props.abilityHrid === change.to : props.itemHrid === change.to.itemHrid &&
-              (!Object.hasOwn(change.to, "enhancementLevel") || props.enhancementLevel === change.to.enhancementLevel))) { match = true; break; }
+          if (props && (ability ? props.abilityHrid === change.to : props.itemHrid === itemTarget.itemHrid &&
+              (!Object.hasOwn(itemTarget, "enhancementLevel") || props.enhancementLevel === itemTarget.enhancementLevel))) { match = true; break; }
           if (fiber.child) pending.push(fiber.child);
           if (fiber !== first && fiber.sibling) pending.push(fiber.sibling);
         }

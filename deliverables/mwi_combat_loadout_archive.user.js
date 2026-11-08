@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.3
+// @version      0.2.4
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
@@ -508,7 +508,7 @@
     return { dispose, report, client };
   }
   if (typeof module !== "undefined" && module.exports) module.exports = { createUsageClient, boot };
-  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.3","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
+  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.4","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
 setValue: typeof GM_setValue === "function" ? GM_setValue : null,
 listen: typeof GM_addValueChangeListener === "function" ? GM_addValueChangeListener : null,
 unlisten: typeof GM_removeValueChangeListener === "function" ? GM_removeValueChangeListener : null,
@@ -773,8 +773,9 @@ request: typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null}); }
       const ability = list.className.includes("AbilitySlot_");
       const listFiber = hostFiber(list, hostFiber(ctx.panel)), ancestors = new Set(); let owner = listFiber;
       for (let i = 0; owner && i < 80; i++, owner = owner.return) ancestors.add(owner.stateNode);
-      const change = changes.find(change => change.to && (ability ? change.kind === "ability" : change.kind === "equipment") && ancestors.has(target(ctx, change)));
+      const change = changes.find(change => change.to && (ability ? change.kind === "ability" : ["equipment", "food", "drink"].includes(change.kind)) && ancestors.has(target(ctx, change)));
       if (!change) continue;
+      const itemTarget = change.kind === "equipment" ? change.to : { itemHrid: change.to };
       const hosts = new Map(), queue = listFiber?.child ? [listFiber.child] : [], visited = new Set();
       for (let count = 0; queue.length && count < 4000; count++) {
         const fiber = queue.pop(); if (!fiber || visited.has(fiber)) continue; visited.add(fiber);
@@ -787,8 +788,8 @@ request: typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null}); }
         for (let count = 0; pending.length && count < 400; count++) {
           const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue; seen.add(fiber);
           const props = fiber.memoizedProps || fiber.stateNode?.props;
-          if (props && (ability ? props.abilityHrid === change.to : props.itemHrid === change.to.itemHrid &&
-              (!Object.hasOwn(change.to, "enhancementLevel") || props.enhancementLevel === change.to.enhancementLevel))) { match = true; break; }
+          if (props && (ability ? props.abilityHrid === change.to : props.itemHrid === itemTarget.itemHrid &&
+              (!Object.hasOwn(itemTarget, "enhancementLevel") || props.enhancementLevel === itemTarget.enhancementLevel))) { match = true; break; }
           if (fiber.child) pending.push(fiber.child);
           if (fiber !== first && fiber.sibling) pending.push(fiber.sibling);
         }
