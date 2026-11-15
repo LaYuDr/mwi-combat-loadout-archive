@@ -18,7 +18,7 @@ const header = `// ==UserScript==
 // @supportURL   https://github.com/${config.repository}/issues
 // @updateURL    ${download.replace(/\.user\.js$/, ".meta.js")}
 // @downloadURL  ${download}
-// @description  保存游戏原生配装的场景子方案，对照装备、技能和消耗品及触发条件，提示玩家手动切换。
+// @description  银河奶牛配装助手：保存原生配装的场景子方案，对比配装差异，提供手动切换指引。
 // @match        https://www.milkywayidle.com/game*
 // @match        https://milkywayidle.com/game*
 // @match        https://www.milkywayidlecn.com/game*

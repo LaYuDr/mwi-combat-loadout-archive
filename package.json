@@ -1,8 +1,8 @@
 {
   "name": "mwi-combat-loadout-archive",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
-  "description": "游戏原生配装的场景子方案保存与手动切换指引",
+  "description": "银河奶牛配装助手：保存原生配装的场景子方案，对比配装差异，提供手动切换指引。",
   "scripts": {
     "dev": "node source/dev_server.cjs",
     "build": "node source/build.cjs",

@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.7
+// @version      0.2.8
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
 // @updateURL    https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.meta.js
 // @downloadURL  https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.user.js
-// @description  保存游戏原生配装的场景子方案，对照装备、技能和消耗品及触发条件，提示玩家手动切换。
+// @description  银河奶牛配装助手：保存原生配装的场景子方案，对比配装差异，提供手动切换指引。
 // @match        https://www.milkywayidle.com/game*
 // @match        https://milkywayidle.com/game*
 // @match        https://www.milkywayidlecn.com/game*

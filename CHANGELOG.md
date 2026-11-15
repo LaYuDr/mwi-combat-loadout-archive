@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.8] - 2026-11-15
+
+### Changed
+
+- 统一脚本简介的句式与功能用词，功能保持不变。
+
 ## [0.2.7] - 2026-11-15
 
 ### Changed
