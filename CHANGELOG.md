@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.7] - 2026-11-15
+
+### Changed
+
+- 将公开脚本名称由“MWI 配装助手”统一为“配装助手”。
+
 ## [0.2.6] - 2026-11-08
 
 ### Changed

@@ -10,7 +10,7 @@ const download = config.greasyForkId
   : `https://raw.githubusercontent.com/${config.repository}/${config.branch}/${config.scriptFile}`;
 const read = name => fs.readFileSync(path.join(__dirname, name), "utf8");
 const header = `// ==UserScript==
-// @name         MWI 配装助手
+// @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
 // @version      ${version}
 // @author       柆雨
@@ -43,7 +43,7 @@ new vm.Script(output);
 const loaderHeader = header
   .replace(usageBuild.metadata, "")
   .replace(/^\/\/ @(?:updateURL|downloadURL).*\n/gm, "")
-  .replace("// @name         MWI 配装助手", "// @name         A配装助手 开发加载器")
+  .replace("// @name         配装助手", "// @name         A配装助手 开发加载器")
   .replace("/loadout-archive\n", "/loadout-archive/dev\n")
   .replace("// @grant        GM_addElement\n// @grant        unsafeWindow\n// @sandbox      raw", "// @grant        GM_xmlhttpRequest\n// @grant        GM_addElement\n// @connect      127.0.0.1");
 const loader = loaderHeader + read("dev_loader.js");
