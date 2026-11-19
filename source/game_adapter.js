@@ -29,22 +29,30 @@
     }
     return null;
   }
-  function current() {
+  function visibleLoadoutPanel() {
     const panels = [...document.querySelectorAll(selector("loadoutsPanel"))].filter(visible);
-    if (panels.length !== 1) return null;
-    const panel = panels[0], details = panel.querySelector(selector("details")), setup = panel.querySelector(selector("setup"));
-    if (!visible(details) || !visible(setup)) return null;
+    return panels.length === 1 ? panels[0] : null;
+  }
+  function loadoutController(panel) {
     let fiber = hostFiber(panel), controller = null;
     if (!fiber) throw Error("无法读取游戏配装数据；请重新打开配装详情，若仍失败请反馈页面版本。");
     const seen = new Set();
     for (let i = 0; fiber && i < 80 && !seen.has(fiber); i++, fiber = fiber.return) {
       seen.add(fiber);
       const instance = fiber.stateNode;
-      if (instance?.state?.selectedCharacterLoadoutId && instance?.props?.characterLoadoutDict) {
+      if (instance?.state && Object.hasOwn(instance.state, "selectedCharacterLoadoutId") && instance.props?.characterLoadoutDict) {
         if (controller && controller !== instance) throw Error("检测到多个配装上下文，已停止读取。");
         controller = instance;
       }
     }
+    return controller;
+  }
+  function current() {
+    const panel = visibleLoadoutPanel();
+    if (!panel) return null;
+    const details = panel.querySelector(selector("details")), setup = panel.querySelector(selector("setup"));
+    if (!visible(details) || !visible(setup) || details.closest("[data-mwi-loadout-overview]")) return null;
+    const controller = loadoutController(panel);
     if (!controller) throw Error("原生配装数据尚未就绪，请重新打开配装。");
     const props = controller.props, id = controller.state.selectedCharacterLoadoutId;
     const characterId = props.characterInfo?.characterID;
@@ -163,5 +171,5 @@
     }
     return contexts;
   }
-  app.Adapter = Object.freeze({ current, describe, target, pickerTargets, actionContexts });
+  app.Adapter = Object.freeze({ current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
 })(globalThis);

@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.8
+// @version      0.2.9
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
 // @updateURL    https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.meta.js
 // @downloadURL  https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.user.js
-// @description  银河奶牛配装助手：保存原生配装的场景子方案，对比配装差异，提供手动切换指引。
+// @description  银河奶牛配装助手：总览并编辑原生配装，保存场景子方案、高亮切换差异，记住生活与战斗项目的配装选择，支持子方案备份。
 // @match        https://www.milkywayidle.com/game*
 // @match        https://milkywayidle.com/game*
 // @match        https://www.milkywayidlecn.com/game*

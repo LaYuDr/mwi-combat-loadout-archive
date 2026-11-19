@@ -18,7 +18,7 @@ const header = `// ==UserScript==
 // @supportURL   https://github.com/${config.repository}/issues
 // @updateURL    ${download.replace(/\.user\.js$/, ".meta.js")}
 // @downloadURL  ${download}
-// @description  银河奶牛配装助手：保存原生配装的场景子方案，对比配装差异，提供手动切换指引。
+// @description  银河奶牛配装助手：总览并编辑原生配装，保存场景子方案、高亮切换差异，记住生活与战斗项目的配装选择，支持子方案备份。
 // @match        https://www.milkywayidle.com/game*
 // @match        https://milkywayidle.com/game*
 // @match        https://www.milkywayidlecn.com/game*
@@ -31,8 +31,9 @@ ${usageBuild.metadata}// @grant        GM_addElement
 // @license      MIT
 // ==/UserScript==
 `;
-const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memory.js", "app.js"].map(name => {
+const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memory.js", "overview.js", "app.js"].map(name => {
   let source = read(name);
+  if (name === "overview.js") source = source.replace('"__OVERVIEW_CSS__"', () => JSON.stringify(read("overview.css")));
   if (name === "app.js") source = source.replace('"__SCENE_CSS__"', () => JSON.stringify(read("scene.css")));
   return `// ---- ${name} ----\n${source}`;
 }).join("\n");

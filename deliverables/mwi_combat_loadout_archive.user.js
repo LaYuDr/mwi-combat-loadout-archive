@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.8
+// @version      0.2.9
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
 // @updateURL    https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.meta.js
 // @downloadURL  https://update.greasyfork.org/scripts/602254/mwi_combat_loadout_archive.user.js
-// @description  银河奶牛配装助手：保存原生配装的场景子方案，对比配装差异，提供手动切换指引。
+// @description  银河奶牛配装助手：总览并编辑原生配装，保存场景子方案、高亮切换差异，记住生活与战斗项目的配装选择，支持子方案备份。
 // @match        https://www.milkywayidle.com/game*
 // @match        https://milkywayidle.com/game*
 // @match        https://www.milkywayidlecn.com/game*
@@ -508,7 +508,7 @@
     return { dispose, report, client };
   }
   if (typeof module !== "undefined" && module.exports) module.exports = { createUsageClient, boot };
-  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.8","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
+  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.9","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
 setValue: typeof GM_setValue === "function" ? GM_setValue : null,
 listen: typeof GM_addValueChangeListener === "function" ? GM_addValueChangeListener : null,
 unlisten: typeof GM_removeValueChangeListener === "function" ? GM_removeValueChangeListener : null,
@@ -684,22 +684,30 @@ request: typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null}); }
     }
     return null;
   }
-  function current() {
+  function visibleLoadoutPanel() {
     const panels = [...document.querySelectorAll(selector("loadoutsPanel"))].filter(visible);
-    if (panels.length !== 1) return null;
-    const panel = panels[0], details = panel.querySelector(selector("details")), setup = panel.querySelector(selector("setup"));
-    if (!visible(details) || !visible(setup)) return null;
+    return panels.length === 1 ? panels[0] : null;
+  }
+  function loadoutController(panel) {
     let fiber = hostFiber(panel), controller = null;
     if (!fiber) throw Error("无法读取游戏配装数据；请重新打开配装详情，若仍失败请反馈页面版本。");
     const seen = new Set();
     for (let i = 0; fiber && i < 80 && !seen.has(fiber); i++, fiber = fiber.return) {
       seen.add(fiber);
       const instance = fiber.stateNode;
-      if (instance?.state?.selectedCharacterLoadoutId && instance?.props?.characterLoadoutDict) {
+      if (instance?.state && Object.hasOwn(instance.state, "selectedCharacterLoadoutId") && instance.props?.characterLoadoutDict) {
         if (controller && controller !== instance) throw Error("检测到多个配装上下文，已停止读取。");
         controller = instance;
       }
     }
+    return controller;
+  }
+  function current() {
+    const panel = visibleLoadoutPanel();
+    if (!panel) return null;
+    const details = panel.querySelector(selector("details")), setup = panel.querySelector(selector("setup"));
+    if (!visible(details) || !visible(setup) || details.closest("[data-mwi-loadout-overview]")) return null;
+    const controller = loadoutController(panel);
     if (!controller) throw Error("原生配装数据尚未就绪，请重新打开配装。");
     const props = controller.props, id = controller.state.selectedCharacterLoadoutId;
     const characterId = props.characterInfo?.characterID;
@@ -818,7 +826,7 @@ request: typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null}); }
     }
     return contexts;
   }
-  app.Adapter = Object.freeze({ current, describe, target, pickerTargets, actionContexts });
+  app.Adapter = Object.freeze({ current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
 })(globalThis);
 
 // ---- scene_store.js ----
@@ -1071,6 +1079,255 @@ request: typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null}); }
     tick(); setInterval(tick, 650);
   }
   app.ActionMemory = Object.freeze({ start, tick });
+})(globalThis);
+
+// ---- overview.js ----
+(function (root) {
+  "use strict";
+  const app = root.MWILoadoutScenes;
+  const css = "[data-mwi-loadout-overview] {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));\n  align-items: start;\n  gap: .75rem;\n  text-align: start;\n}\n.mwi-overview-card {\n  container-type: inline-size;\n  min-width: 0;\n  border: 1px solid var(--color-divider, #4c5677);\n  border-radius: var(--radius-sm, 8px);\n  background: var(--color-midnight-700, #202333);\n  color: var(--color-text-dark-mode, #f1f2fa);\n}\n.mwi-overview-card-head {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: .25rem .5rem;\n  min-height: 2.75rem;\n  padding: .35rem .625rem;\n  background: var(--color-midnight-500, #2b3045);\n  border-block-end: 1px solid var(--color-divider, #4c5677);\n  border-start-start-radius: inherit;\n  border-start-end-radius: inherit;\n}\n.mwi-overview-card-head h3 {\n  display: flex;\n  align-items: center;\n  flex: 1 1 6rem;\n  min-width: 0;\n  margin: 0;\n  font-size: 1rem;\n  font-weight: 600;\n  overflow-wrap: anywhere;\n}\n.mwi-overview-options {\n  display: flex;\n  align-items: center;\n  gap: .25rem .625rem;\n  padding: .125rem .625rem 0;\n  white-space: nowrap;\n}\n.mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { margin: 0; min-height: 2rem; }\n.mwi-overview-options [class*=\"MuiTypography-root\"] { font-size: .8rem; }\n.mwi-overview-button {\n  color: var(--color-text-dark-mode, #f1f2fa);\n  background: var(--color-midnight-500, #2b3045);\n  border: 1px solid var(--color-space-300, #7d87b0);\n  border-radius: var(--radius-sm, 5px);\n  font: inherit;\n  font-size: .82rem;\n  padding: .3rem .55rem;\n  min-height: 2rem;\n  cursor: pointer;\n}\n.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }\n.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }\n.mwi-overview-toggle { align-self: flex-start; }\n.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] { min-width: 0; width: 100%; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));\n  width: 100%;\n  box-sizing: border-box;\n  padding: .625rem;\n  gap: .625rem;\n  background: transparent;\n}\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_playerModel__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_abilities__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }\n.mwi-overview-has-requirement { position: relative; }\n.mwi-overview-requirement {\n  position: absolute;\n  inset: .125rem .1875rem auto auto;\n  z-index: 1;\n  color: #ffc268;\n  font-size: .8125rem;\n  font-variant-numeric: tabular-nums;\n  font-weight: 600;\n  line-height: 1;\n  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;\n  pointer-events: none;\n}\n@media (pointer: coarse) {\n  .mwi-overview-button { min-height: 2.75rem; }\n  .mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { min-height: 2.75rem; }\n}\n";
+  const marker = "data-mwi-loadout-overview";
+  const installed = new WeakMap();
+  const slotTypes = new Set(["equipment", "ability", "food", "drink", "ability_trigger", "food_trigger", "drink_trigger"]);
+  const optionLabels = [
+    ["isDefaultChanged", "默认"],
+    ["suppressValidationChanged", "缺失不提醒"],
+    ["useExactEnhancementChanged", "最高强化"]
+  ];
+  let runtime, showGrid = true;
+
+  // The game bundles React and its cache codec in webpack 4. Reuse the loaded
+  // exports so its components keep their context and renderer in the same tree.
+  function gameRuntime() {
+    if (runtime) return runtime;
+    const chunks = root.webpackJsonprpg_web;
+    if (!Array.isArray(chunks) || chunks.push === Array.prototype.push) return null;
+    const id = "mwi-layu-loadout-overview-runtime";
+    const probe = [[], { [id]: (module, exports, require) => {
+      try {
+        const loaded = Object.values(require.c).map(entry => entry.exports);
+        const React = loaded.find(value => typeof value?.createElement === "function" &&
+          typeof value.cloneElement === "function" && typeof value.Component === "function" && value.Children);
+        const codec = loaded.find(value => typeof value?.decompressFromUTF16 === "function" &&
+          typeof value.compressToUTF16 === "function");
+        if (React) runtime = { React, codec };
+      } finally {
+        delete require.c[id];
+        delete require.m[id];
+      }
+    } }, [[id]]];
+    try { chunks.push(probe); } finally {
+      const index = chunks.indexOf(probe);
+      if (index !== -1) chunks.splice(index, 1);
+    }
+    return runtime;
+  }
+
+  function readRequirements(codec) {
+    const requirements = new Map();
+    try {
+      const raw = root.localStorage.getItem("initClientData");
+      if (!raw) return requirements;
+      const text = raw.trimStart().startsWith("{") ? raw : codec?.decompressFromUTF16(raw);
+      if (!text) return requirements;
+      for (const [hrid, detail] of Object.entries(JSON.parse(text).itemDetailMap || {})) {
+        const levels = detail?.equipmentDetail?.levelRequirements;
+        if (!Array.isArray(levels)) continue;
+        const maximum = levels.reduce((max, entry) => Number.isSafeInteger(entry?.level) ? Math.max(max, entry.level) : max, 0);
+        if (maximum) requirements.set(hrid, maximum);
+      }
+    } catch (_) { /* A missing cache must not stop the game's native editor. */ }
+    return requirements;
+  }
+
+  const hasClass = (node, name) => typeof node?.props?.className === "string" && node.props.className.includes(`LoadoutsPanel_${name}__`);
+  const children = (React, node) => React.Children.toArray(node?.props?.children);
+  const child = (React, node, name) => children(React, node).find(entry => hasClass(entry, name));
+
+  function cardOptions(React, details, controller) {
+    const controls = children(React, details).filter(entry => hasClass(entry, "metadata"))
+      .flatMap(entry => children(React, entry));
+    const options = optionLabels.map(([handler, label]) => {
+      const control = controls.find(entry => typeof entry?.props?.onChange === "function" && entry.props.onChange === controller[handler]);
+      return control && React.createElement("div", { key: handler, title: control.props.label }, React.cloneElement(control, { label }));
+    });
+    return options.every(Boolean) ? React.createElement("div", {
+      className: "mwi-overview-options", role: "group", "aria-label": "配装选项"
+    }, options) : null;
+  }
+
+  function cardSetup(React, shell, requirements) {
+    const details = child(React, shell, "details"), setup = child(React, details, "setup");
+    const equipment = child(React, setup, "equipment"), model = child(React, equipment, "playerModel");
+    if (!model || !child(React, setup, "buttonsContainer")) throw Error("配装编辑区结构已变化");
+    const slots = children(React, model);
+    const updated = slots.map(slot => {
+      const level = requirements.get(slot.props?.children?.props?.currentItem?.itemHrid);
+      const position = slot.props?.style?.gridRowStart;
+      const isTool = position === 7 || position === 8;
+      if (!level && !isTool) return slot;
+      const badge = level && React.createElement("span", {
+        className: "mwi-overview-requirement", title: `装备需求等级 ${level}`, "aria-label": `装备需求等级 ${level}`
+      }, level);
+      return React.cloneElement(slot, {
+        className: [slot.props.className, level && "mwi-overview-has-requirement"].filter(Boolean).join(" ") || undefined,
+        style: isTool ? { ...slot.props.style, gridRowStart: position - 1 } : slot.props.style
+      }, slot.props.children, badge || null);
+    });
+    if (slots.some(slot => slot.props?.style?.gridRowStart === 7)) {
+      updated.push(React.createElement("div", { className: "mwi-overview-tools", key: "tools" }, "生活工具"));
+    }
+    const modelWithBadges = React.cloneElement(model, null, updated);
+    const equipmentWithBadges = React.cloneElement(equipment, null, children(React, equipment)
+      .map(entry => hasClass(entry, "playerModel") ? modelWithBadges : entry));
+    const sections = children(React, setup).filter(entry => !hasClass(entry, "buttonsContainer"))
+      .map(entry => hasClass(entry, "equipment") ? equipmentWithBadges : entry);
+    return React.cloneElement(setup, null, sections);
+  }
+
+  function makeCard(React, NativePanel) {
+    const h = React.createElement;
+    class NativeSlots extends NativePanel {
+      constructor(props) {
+        super(props);
+        // This instance owns exactly one ID. Native slot handlers close over
+        // this state, independently of the page selection and the other cards.
+        this.state = { ...this.state, selectedCharacterLoadoutId: props.overviewId };
+      }
+      componentDidUpdate() { /* The list owns this card's lifetime. */ }
+      render() {
+        const shell = this.renderLoadout();
+        if (!hasClass(shell, "selectedLoadout")) throw Error("配装详情结构已变化");
+        const setup = cardSetup(React, shell, this.props.overviewRequirements);
+        const details = child(React, shell, "details");
+        const options = this.props.overviewCanUpdateOptions && cardOptions(React, details, this);
+        return React.cloneElement(shell, null, React.cloneElement(details, null, options, setup));
+      }
+    }
+    // Keep a malformed native card from taking down the surrounding game UI.
+    return class OverviewCard extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { failed: false, notice: "" };
+      }
+      static getDerivedStateFromError() { return { failed: true }; }
+      rememberCard = element => { this.element = element; };
+      update(send, change) {
+        if (!this.element) return;
+        const notice = send(this.element, change) ? "" : "配装已变化，请重新打开配装页。";
+        if (notice !== this.state.notice) this.setState({ notice });
+      }
+      updateSlot = change => this.update(this.props.sendSlot, change);
+      updateOptions = change => this.update(this.props.sendOptions, change);
+      render() {
+        const { id, name, icon, openDetails, nativeProps } = this.props;
+        return h("article", { ref: this.rememberCard, className: "mwi-overview-card", "data-mwi-overview-id": id, "aria-label": name },
+          h("header", { className: "mwi-overview-card-head" },
+            h("h3", null, icon, name),
+            h("button", { type: "button", className: "mwi-overview-button", "aria-label": `${name}的详情和子方案`, onClick: openDetails }, "详情")),
+          this.state.failed ? h("p", { className: "mwi-overview-notice", role: "status" }, "这套配装暂时无法展开，可以打开详情编辑。")
+            : h(NativeSlots, { ...nativeProps, updateLoadoutSlotHandler: this.updateSlot, updateLoadoutHandler: this.updateOptions }),
+          this.state.notice && h("p", { className: "mwi-overview-notice", role: "status" }, this.state.notice));
+      }
+    };
+  }
+
+  function install(controller, panel, { React, codec }) {
+    if (!(controller instanceof React.Component) || typeof controller.renderLoadout !== "function" ||
+        typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
+    const render = controller.render;
+    const Card = makeCard(React, controller.constructor);
+    const mounted = { panel, requirements: readRequirements(codec) };
+    const h = React.createElement;
+
+    function currentCard(owner, id, element, change) {
+      const { props, state } = controller;
+      return showGrid && state.selectedCharacterLoadoutId === null && owner === props.characterInfo?.characterID &&
+        props.characterLoadoutDict?.[id]?.id === id && change?.id === id &&
+        element.isConnected && mounted.panel.contains(element) && element.getClientRects().length;
+    }
+
+    function sendSlot(owner, id, element, change) {
+      if (!currentCard(owner, id, element, change) || !slotTypes.has(change.slotType) ||
+          typeof controller.props.updateLoadoutSlotHandler !== "function") return false;
+      controller.props.updateLoadoutSlotHandler(change);
+      return true;
+    }
+
+    function sendOptions(owner, id, element, change) {
+      const { props } = controller;
+      if (!currentCard(owner, id, element, change) || typeof props.updateLoadoutHandler !== "function" ||
+          change.name !== props.characterLoadoutDict[id].name ||
+          ![change.isDefault, change.suppressValidation, change.useExactEnhancement].every(value => typeof value === "boolean")) return false;
+      props.updateLoadoutHandler(change);
+      return true;
+    }
+
+    function renderOverview(native) {
+      const main = child(React, native, "mainView"), list = child(React, main, "characterLoadouts");
+      if (!list) return native;
+      const { props } = controller, owner = props.characterInfo?.characterID;
+      if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function") return native;
+      const rows = children(React, list);
+      if (!rows.length) return native;
+      const cards = rows.map(row => {
+        const id = row.props?.["data-loadout-id"], loadout = props.characterLoadoutDict[id];
+        if (!Number.isSafeInteger(id) || loadout?.id !== id || typeof loadout.name !== "string" ||
+            typeof row.props.onClick !== "function") throw Error("配装列表结构已变化");
+        return h(Card, {
+          key: `${owner}:${id}`, id, name: loadout.name,
+          icon: children(React, row)[1], openDetails: row.props.onClick,
+          nativeProps: { ...props, overviewId: id, overviewRequirements: mounted.requirements,
+            overviewCanUpdateOptions: typeof props.updateLoadoutHandler === "function" },
+          sendSlot: (element, change) => sendSlot(owner, id, element, change),
+          sendOptions: (element, change) => sendOptions(owner, id, element, change)
+        });
+      });
+      const toggle = h("button", {
+        key: "mwi-overview-toggle", type: "button", className: "mwi-overview-button mwi-overview-toggle",
+        onClick: () => { showGrid = !showGrid; controller.forceUpdate(); }
+      }, showGrid ? "原生列表" : "配装总览");
+      const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toggle,
+        showGrid ? h("div", { key: "mwi-overview-grid", [marker]: "" }, cards) : entry]);
+      const updatedMain = React.cloneElement(main, null, mainChildren);
+      return React.cloneElement(native, null, children(React, native)
+        .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));
+    }
+
+    if (typeof render !== "function") return;
+    controller.render = function () {
+      const native = render.call(this);
+      if (this.state.selectedCharacterLoadoutId !== null) return native;
+      try { return renderOverview(native); }
+      catch (_) { return native; }
+    };
+    installed.set(controller, mounted);
+    controller.forceUpdate();
+  }
+
+  function sync() {
+    try {
+      const panel = app.Adapter.visibleLoadoutPanel();
+      if (!panel?.querySelector('[class*="LoadoutsPanel_mainView__"]')) return;
+      const controller = app.Adapter.loadoutController(panel);
+      if (!controller) return;
+      const prior = installed.get(controller);
+      if (prior) prior.panel = panel;
+      else if (controller.state.selectedCharacterLoadoutId === null) {
+        const game = gameRuntime();
+        if (game) install(controller, panel, game);
+      }
+    } catch (_) { /* Keep the native list usable if a game update changes the integration. */ }
+  }
+
+  function start() {
+    const style = document.createElement("style");
+    style.id = "mwi-loadout-overview-style";
+    style.textContent = css;
+    document.head.append(style);
+  }
+
+  app.Overview = Object.freeze({ start, sync });
 })(globalThis);
 
 // ---- app.js ----
@@ -1448,6 +1705,7 @@ request: typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null}); }
   }
   function tick() {
     if (document.hidden) return;
+    app.Overview.sync();
     try {
       const ctx = Adapter.current();
       if (!ctx) { if (mounted) detach(); return; }
@@ -1476,6 +1734,7 @@ request: typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null}); }
   }
   function start() {
     app.ActionMemory.start();
+    app.Overview.start();
     const style = el("style", '[data-mwi-scene-change] { outline: 2px solid #ffd27a !important; outline-offset: 3px !important; } [data-mwi-scene-target] { outline: 3px solid #70b7ff !important; outline-offset: -3px !important; box-shadow: inset 0 0 0 5px #171822 !important; }');
     style.id = "mwi-loadout-scenes-highlight-style"; document.head.append(style);
     const panelSelector = '[class*="LoadoutsPanel_loadoutsPanel__"]';

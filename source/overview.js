@@ -1,0 +1,247 @@
+(function (root) {
+  "use strict";
+  const app = root.MWILoadoutScenes;
+  const css = "__OVERVIEW_CSS__";
+  const marker = "data-mwi-loadout-overview";
+  const installed = new WeakMap();
+  const slotTypes = new Set(["equipment", "ability", "food", "drink", "ability_trigger", "food_trigger", "drink_trigger"]);
+  const optionLabels = [
+    ["isDefaultChanged", "默认"],
+    ["suppressValidationChanged", "缺失不提醒"],
+    ["useExactEnhancementChanged", "最高强化"]
+  ];
+  let runtime, showGrid = true;
+
+  // The game bundles React and its cache codec in webpack 4. Reuse the loaded
+  // exports so its components keep their context and renderer in the same tree.
+  function gameRuntime() {
+    if (runtime) return runtime;
+    const chunks = root.webpackJsonprpg_web;
+    if (!Array.isArray(chunks) || chunks.push === Array.prototype.push) return null;
+    const id = "mwi-layu-loadout-overview-runtime";
+    const probe = [[], { [id]: (module, exports, require) => {
+      try {
+        const loaded = Object.values(require.c).map(entry => entry.exports);
+        const React = loaded.find(value => typeof value?.createElement === "function" &&
+          typeof value.cloneElement === "function" && typeof value.Component === "function" && value.Children);
+        const codec = loaded.find(value => typeof value?.decompressFromUTF16 === "function" &&
+          typeof value.compressToUTF16 === "function");
+        if (React) runtime = { React, codec };
+      } finally {
+        delete require.c[id];
+        delete require.m[id];
+      }
+    } }, [[id]]];
+    try { chunks.push(probe); } finally {
+      const index = chunks.indexOf(probe);
+      if (index !== -1) chunks.splice(index, 1);
+    }
+    return runtime;
+  }
+
+  function readRequirements(codec) {
+    const requirements = new Map();
+    try {
+      const raw = root.localStorage.getItem("initClientData");
+      if (!raw) return requirements;
+      const text = raw.trimStart().startsWith("{") ? raw : codec?.decompressFromUTF16(raw);
+      if (!text) return requirements;
+      for (const [hrid, detail] of Object.entries(JSON.parse(text).itemDetailMap || {})) {
+        const levels = detail?.equipmentDetail?.levelRequirements;
+        if (!Array.isArray(levels)) continue;
+        const maximum = levels.reduce((max, entry) => Number.isSafeInteger(entry?.level) ? Math.max(max, entry.level) : max, 0);
+        if (maximum) requirements.set(hrid, maximum);
+      }
+    } catch (_) { /* A missing cache must not stop the game's native editor. */ }
+    return requirements;
+  }
+
+  const hasClass = (node, name) => typeof node?.props?.className === "string" && node.props.className.includes(`LoadoutsPanel_${name}__`);
+  const children = (React, node) => React.Children.toArray(node?.props?.children);
+  const child = (React, node, name) => children(React, node).find(entry => hasClass(entry, name));
+
+  function cardOptions(React, details, controller) {
+    const controls = children(React, details).filter(entry => hasClass(entry, "metadata"))
+      .flatMap(entry => children(React, entry));
+    const options = optionLabels.map(([handler, label]) => {
+      const control = controls.find(entry => typeof entry?.props?.onChange === "function" && entry.props.onChange === controller[handler]);
+      return control && React.createElement("div", { key: handler, title: control.props.label }, React.cloneElement(control, { label }));
+    });
+    return options.every(Boolean) ? React.createElement("div", {
+      className: "mwi-overview-options", role: "group", "aria-label": "配装选项"
+    }, options) : null;
+  }
+
+  function cardSetup(React, shell, requirements) {
+    const details = child(React, shell, "details"), setup = child(React, details, "setup");
+    const equipment = child(React, setup, "equipment"), model = child(React, equipment, "playerModel");
+    if (!model || !child(React, setup, "buttonsContainer")) throw Error("配装编辑区结构已变化");
+    const slots = children(React, model);
+    const updated = slots.map(slot => {
+      const level = requirements.get(slot.props?.children?.props?.currentItem?.itemHrid);
+      const position = slot.props?.style?.gridRowStart;
+      const isTool = position === 7 || position === 8;
+      if (!level && !isTool) return slot;
+      const badge = level && React.createElement("span", {
+        className: "mwi-overview-requirement", title: `装备需求等级 ${level}`, "aria-label": `装备需求等级 ${level}`
+      }, level);
+      return React.cloneElement(slot, {
+        className: [slot.props.className, level && "mwi-overview-has-requirement"].filter(Boolean).join(" ") || undefined,
+        style: isTool ? { ...slot.props.style, gridRowStart: position - 1 } : slot.props.style
+      }, slot.props.children, badge || null);
+    });
+    if (slots.some(slot => slot.props?.style?.gridRowStart === 7)) {
+      updated.push(React.createElement("div", { className: "mwi-overview-tools", key: "tools" }, "生活工具"));
+    }
+    const modelWithBadges = React.cloneElement(model, null, updated);
+    const equipmentWithBadges = React.cloneElement(equipment, null, children(React, equipment)
+      .map(entry => hasClass(entry, "playerModel") ? modelWithBadges : entry));
+    const sections = children(React, setup).filter(entry => !hasClass(entry, "buttonsContainer"))
+      .map(entry => hasClass(entry, "equipment") ? equipmentWithBadges : entry);
+    return React.cloneElement(setup, null, sections);
+  }
+
+  function makeCard(React, NativePanel) {
+    const h = React.createElement;
+    class NativeSlots extends NativePanel {
+      constructor(props) {
+        super(props);
+        // This instance owns exactly one ID. Native slot handlers close over
+        // this state, independently of the page selection and the other cards.
+        this.state = { ...this.state, selectedCharacterLoadoutId: props.overviewId };
+      }
+      componentDidUpdate() { /* The list owns this card's lifetime. */ }
+      render() {
+        const shell = this.renderLoadout();
+        if (!hasClass(shell, "selectedLoadout")) throw Error("配装详情结构已变化");
+        const setup = cardSetup(React, shell, this.props.overviewRequirements);
+        const details = child(React, shell, "details");
+        const options = this.props.overviewCanUpdateOptions && cardOptions(React, details, this);
+        return React.cloneElement(shell, null, React.cloneElement(details, null, options, setup));
+      }
+    }
+    // Keep a malformed native card from taking down the surrounding game UI.
+    return class OverviewCard extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { failed: false, notice: "" };
+      }
+      static getDerivedStateFromError() { return { failed: true }; }
+      rememberCard = element => { this.element = element; };
+      update(send, change) {
+        if (!this.element) return;
+        const notice = send(this.element, change) ? "" : "配装已变化，请重新打开配装页。";
+        if (notice !== this.state.notice) this.setState({ notice });
+      }
+      updateSlot = change => this.update(this.props.sendSlot, change);
+      updateOptions = change => this.update(this.props.sendOptions, change);
+      render() {
+        const { id, name, icon, openDetails, nativeProps } = this.props;
+        return h("article", { ref: this.rememberCard, className: "mwi-overview-card", "data-mwi-overview-id": id, "aria-label": name },
+          h("header", { className: "mwi-overview-card-head" },
+            h("h3", null, icon, name),
+            h("button", { type: "button", className: "mwi-overview-button", "aria-label": `${name}的详情和子方案`, onClick: openDetails }, "详情")),
+          this.state.failed ? h("p", { className: "mwi-overview-notice", role: "status" }, "这套配装暂时无法展开，可以打开详情编辑。")
+            : h(NativeSlots, { ...nativeProps, updateLoadoutSlotHandler: this.updateSlot, updateLoadoutHandler: this.updateOptions }),
+          this.state.notice && h("p", { className: "mwi-overview-notice", role: "status" }, this.state.notice));
+      }
+    };
+  }
+
+  function install(controller, panel, { React, codec }) {
+    if (!(controller instanceof React.Component) || typeof controller.renderLoadout !== "function" ||
+        typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
+    const render = controller.render;
+    const Card = makeCard(React, controller.constructor);
+    const mounted = { panel, requirements: readRequirements(codec) };
+    const h = React.createElement;
+
+    function currentCard(owner, id, element, change) {
+      const { props, state } = controller;
+      return showGrid && state.selectedCharacterLoadoutId === null && owner === props.characterInfo?.characterID &&
+        props.characterLoadoutDict?.[id]?.id === id && change?.id === id &&
+        element.isConnected && mounted.panel.contains(element) && element.getClientRects().length;
+    }
+
+    function sendSlot(owner, id, element, change) {
+      if (!currentCard(owner, id, element, change) || !slotTypes.has(change.slotType) ||
+          typeof controller.props.updateLoadoutSlotHandler !== "function") return false;
+      controller.props.updateLoadoutSlotHandler(change);
+      return true;
+    }
+
+    function sendOptions(owner, id, element, change) {
+      const { props } = controller;
+      if (!currentCard(owner, id, element, change) || typeof props.updateLoadoutHandler !== "function" ||
+          change.name !== props.characterLoadoutDict[id].name ||
+          ![change.isDefault, change.suppressValidation, change.useExactEnhancement].every(value => typeof value === "boolean")) return false;
+      props.updateLoadoutHandler(change);
+      return true;
+    }
+
+    function renderOverview(native) {
+      const main = child(React, native, "mainView"), list = child(React, main, "characterLoadouts");
+      if (!list) return native;
+      const { props } = controller, owner = props.characterInfo?.characterID;
+      if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function") return native;
+      const rows = children(React, list);
+      if (!rows.length) return native;
+      const cards = rows.map(row => {
+        const id = row.props?.["data-loadout-id"], loadout = props.characterLoadoutDict[id];
+        if (!Number.isSafeInteger(id) || loadout?.id !== id || typeof loadout.name !== "string" ||
+            typeof row.props.onClick !== "function") throw Error("配装列表结构已变化");
+        return h(Card, {
+          key: `${owner}:${id}`, id, name: loadout.name,
+          icon: children(React, row)[1], openDetails: row.props.onClick,
+          nativeProps: { ...props, overviewId: id, overviewRequirements: mounted.requirements,
+            overviewCanUpdateOptions: typeof props.updateLoadoutHandler === "function" },
+          sendSlot: (element, change) => sendSlot(owner, id, element, change),
+          sendOptions: (element, change) => sendOptions(owner, id, element, change)
+        });
+      });
+      const toggle = h("button", {
+        key: "mwi-overview-toggle", type: "button", className: "mwi-overview-button mwi-overview-toggle",
+        onClick: () => { showGrid = !showGrid; controller.forceUpdate(); }
+      }, showGrid ? "原生列表" : "配装总览");
+      const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toggle,
+        showGrid ? h("div", { key: "mwi-overview-grid", [marker]: "" }, cards) : entry]);
+      const updatedMain = React.cloneElement(main, null, mainChildren);
+      return React.cloneElement(native, null, children(React, native)
+        .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));
+    }
+
+    if (typeof render !== "function") return;
+    controller.render = function () {
+      const native = render.call(this);
+      if (this.state.selectedCharacterLoadoutId !== null) return native;
+      try { return renderOverview(native); }
+      catch (_) { return native; }
+    };
+    installed.set(controller, mounted);
+    controller.forceUpdate();
+  }
+
+  function sync() {
+    try {
+      const panel = app.Adapter.visibleLoadoutPanel();
+      if (!panel?.querySelector('[class*="LoadoutsPanel_mainView__"]')) return;
+      const controller = app.Adapter.loadoutController(panel);
+      if (!controller) return;
+      const prior = installed.get(controller);
+      if (prior) prior.panel = panel;
+      else if (controller.state.selectedCharacterLoadoutId === null) {
+        const game = gameRuntime();
+        if (game) install(controller, panel, game);
+      }
+    } catch (_) { /* Keep the native list usable if a game update changes the integration. */ }
+  }
+
+  function start() {
+    const style = document.createElement("style");
+    style.id = "mwi-loadout-overview-style";
+    style.textContent = css;
+    document.head.append(style);
+  }
+
+  app.Overview = Object.freeze({ start, sync });
+})(globalThis);

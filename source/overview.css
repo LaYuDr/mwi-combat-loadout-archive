@@ -1,0 +1,92 @@
+[data-mwi-loadout-overview] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));
+  align-items: start;
+  gap: .75rem;
+  text-align: start;
+}
+.mwi-overview-card {
+  container-type: inline-size;
+  min-width: 0;
+  border: 1px solid var(--color-divider, #4c5677);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-midnight-700, #202333);
+  color: var(--color-text-dark-mode, #f1f2fa);
+}
+.mwi-overview-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .25rem .5rem;
+  min-height: 2.75rem;
+  padding: .35rem .625rem;
+  background: var(--color-midnight-500, #2b3045);
+  border-block-end: 1px solid var(--color-divider, #4c5677);
+  border-start-start-radius: inherit;
+  border-start-end-radius: inherit;
+}
+.mwi-overview-card-head h3 {
+  display: flex;
+  align-items: center;
+  flex: 1 1 6rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.mwi-overview-options {
+  display: flex;
+  align-items: center;
+  gap: .25rem .625rem;
+  padding: .125rem .625rem 0;
+  white-space: nowrap;
+}
+.mwi-overview-options [class*="MuiFormControlLabel-root"] { margin: 0; min-height: 2rem; }
+.mwi-overview-options [class*="MuiTypography-root"] { font-size: .8rem; }
+.mwi-overview-button {
+  color: var(--color-text-dark-mode, #f1f2fa);
+  background: var(--color-midnight-500, #2b3045);
+  border: 1px solid var(--color-space-300, #7d87b0);
+  border-radius: var(--radius-sm, 5px);
+  font: inherit;
+  font-size: .82rem;
+  padding: .3rem .55rem;
+  min-height: 2rem;
+  cursor: pointer;
+}
+.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }
+.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }
+.mwi-overview-toggle { align-self: flex-start; }
+.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }
+[data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_selectedLoadout__"] { padding: 0; align-items: stretch; }
+[data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_details__"] { min-width: 0; width: 100%; margin: 0; }
+[data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_details__"] [class*="LoadoutsPanel_setup__"] {
+  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));
+  width: 100%;
+  box-sizing: border-box;
+  padding: .625rem;
+  gap: .625rem;
+  background: transparent;
+}
+[data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_playerModel__"],
+[data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_abilities__"],
+[data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_consumables__"] { gap: .25rem; }
+.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }
+.mwi-overview-has-requirement { position: relative; }
+.mwi-overview-requirement {
+  position: absolute;
+  inset: .125rem .1875rem auto auto;
+  z-index: 1;
+  color: #ffc268;
+  font-size: .8125rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;
+  pointer-events: none;
+}
+@media (pointer: coarse) {
+  .mwi-overview-button { min-height: 2.75rem; }
+  .mwi-overview-options [class*="MuiFormControlLabel-root"] { min-height: 2.75rem; }
+}

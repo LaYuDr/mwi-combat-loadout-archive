@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.9] - 2026-11-19
+
+### Changed
+
+- 新增配装总览，可集中查看并手动编辑原生配装；更新功能介绍和主页说明，补全子方案、差异指引、行动配装记忆与备份说明。
+
 ## [0.2.8] - 2026-11-15
 
 ### Changed
