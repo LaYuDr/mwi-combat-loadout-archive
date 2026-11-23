@@ -112,8 +112,6 @@
 .mwi-virtual-card a { color: #bbcaff; }
 .mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }
 .mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }
-.mwi-virtual-items { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .4rem .7rem; font-size: .85rem; }
-.mwi-virtual-items dd { margin: 0; white-space: pre-wrap; }
 .mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }
 .mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }
 
@@ -130,10 +128,6 @@
 .mwi-virtual-native [class*="LoadoutsPanel_consumables__"] { gap: .25rem; }
 .mwi-virtual-slot { min-width: 0; width: fit-content; max-width: 100%; border-radius: 5px; }
 .mwi-virtual-slot [inert] { pointer-events: none; }
-.mwi-virtual-trigger { position: relative; }
-.mwi-virtual-trigger summary { list-style: none; text-align: center; font-size: 1.4rem; line-height: 1.2; padding: .1rem 0; color: #90c9fa; }
-.mwi-virtual-trigger summary::-webkit-details-marker { display: none; }
-.mwi-virtual-trigger p { position: absolute; z-index: 3; width: 15rem; max-width: 75vw; padding: .6rem; white-space: pre-wrap; background: #171822; border: 1px solid #7d87b0; border-radius: 5px; box-shadow: 0 4px 12px #0008; }
 .mwi-virtual-native [class*="Item_count__"],
 .mwi-virtual-native [class*="Ability_level__"],
 .mwi-virtual-native [class*="CombatTriggersSetting_combatTriggersSetting__"] { display: none; }

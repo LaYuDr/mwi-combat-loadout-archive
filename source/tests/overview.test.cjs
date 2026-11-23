@@ -59,7 +59,7 @@ function harness(storage = new Map()) {
     optionChanges.push(change);
     controller.props.characterLoadoutDict[change.id] = change;
   } });
-  const panel = { querySelector: () => ({}), contains: node => node.isConnected };
+  const panel = { querySelector: selector => selector === "[data-mwi-overview-status]" ? null : ({}), contains: node => node.isConnected };
   const webpack = { c: { 0: { exports: React }, 1: { exports: {
     compressToUTF16() {}, decompressFromUTF16: () => JSON.stringify({ itemDetailMap: { "/items/hatchet": {
       equipmentDetail: { levelRequirements: [{ level: 60 }, { level: 1250 }] }

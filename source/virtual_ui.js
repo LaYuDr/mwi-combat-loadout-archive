@@ -71,18 +71,11 @@
     class Snapshot extends React.Component {
       render() {
         const { snapshot, nativeProps } = this.props, raw = snapshot.raw;
-        const empty = { ...raw, wearableMap: {}, abilityMap: {}, foodItemHrids: [], drinkItemHrids: [],
-          abilityCombatTriggersMap: {}, consumableCombatTriggersMap: {} };
-        const changes = app.Core.diff(empty, snapshot);
-        const text = h("dl", { className: "mwi-virtual-items" },
-          changes.map((change, i) => h(React.Fragment, { key: i },
-            h("dt", null, change.label), h("dd", null, app.Adapter.describe({ props: nativeProps }, change, change.to)))));
         return h("div", null,
           h("div", { className: "mwi-virtual-options", "aria-label": "配装选项（只读）" },
             [["默认", raw.isDefault], ["缺失不提醒", raw.suppressValidation], ["最高强化", !raw.useExactEnhancement]].map(([label, checked]) =>
               h("label", { key: label }, h("input", { type: "checkbox", checked: Boolean(checked), disabled: true }), label))),
-          NativePreview && h(NativePreview, { snapshot, nativeProps }),
-          h("details", null, h("summary", null, "文字与触发条件"), text));
+          NativePreview ? h(NativePreview, { snapshot, nativeProps }) : h("p", null, "图标预览暂不可用，请刷新游戏后重试。"));
       }
     }
     return class VirtualPanel extends React.Component {

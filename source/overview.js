@@ -13,11 +13,27 @@
   ];
   let runtime, showGrid = true;
 
+  function notice(panel, message) {
+    let node = panel.querySelector("[data-mwi-overview-status]");
+    if (!message) { node?.remove(); return; }
+    if (!node) {
+      node = document.createElement("p");
+      node.setAttribute("data-mwi-overview-status", "");
+      node.setAttribute("role", "status");
+      node.className = "mwi-overview-notice";
+      panel.prepend(node);
+    }
+    if (node.textContent !== message) node.textContent = message;
+  }
+
   // The game bundles React and its cache codec in webpack 4. Reuse the loaded
   // exports so its components keep their context and renderer in the same tree.
   function gameRuntime() {
     if (runtime) return runtime;
-    const chunks = root.webpackJsonprpg_web;
+    // With GM grants, the installed script's global can differ from the page
+    // global. The development loader already runs in the page world.
+    const page = typeof unsafeWindow === "undefined" ? root : unsafeWindow;
+    const chunks = page.webpackJsonprpg_web || root.webpackJsonprpg_web;
     if (!Array.isArray(chunks) || chunks.push === Array.prototype.push) return null;
     const id = "mwi-layu-loadout-overview-runtime";
     const probe = [[], { [id]: (module, exports, require) => {
@@ -201,7 +217,8 @@
 
   function install(controller, panel, { React, codec }) {
     if (!(controller instanceof React.Component) || typeof controller.renderLoadout !== "function" ||
-        typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
+        typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function")
+      throw Error("配装总览暂不兼容当前游戏组件，请更新脚本后刷新游戏。");
     const render = controller.render;
     const CloudLabel = makeCloudLabel(React);
     const VirtualPanel = app.makeVirtualPanel?.(React, app.makeVirtualPreview?.(React, controller.constructor));
@@ -249,9 +266,10 @@
 
     function renderOverview(native) {
       const main = child(React, native, "mainView"), list = child(React, main, "characterLoadouts");
-      if (!list) return native;
+      if (!list) throw Error("配装总览未能识别当前列表，请更新脚本后刷新游戏。");
       const { props } = controller, owner = props.characterInfo?.characterID;
-      if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function") return native;
+      if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function")
+        throw Error("配装总览所需数据尚未就绪，请重新打开配装页。");
       const rows = children(React, list);
       if (!rows.length && !VirtualPanel) return native;
       if (collapsedOwner !== owner) {
@@ -304,30 +322,41 @@
         .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));
     }
 
-    if (typeof render !== "function") return;
+    if (typeof render !== "function") throw Error("配装总览暂不兼容当前游戏组件，请更新脚本后刷新游戏。");
     controller.render = function () {
       const native = render.call(this);
       if (this.state.selectedCharacterLoadoutId !== null) return native;
-      try { return renderOverview(native); }
-      catch (_) { return native; }
+      try {
+        const result = renderOverview(native);
+        mounted.failure = "";
+        return result;
+      } catch (_) {
+        mounted.failure = "配装总览未能显示，已保留原生列表。请更新脚本后刷新游戏。";
+        return native;
+      }
     };
     installed.set(controller, mounted);
     controller.forceUpdate();
   }
 
   function sync() {
+    let panel;
     try {
-      const panel = app.Adapter.visibleLoadoutPanel();
-      if (!panel?.querySelector('[class*="LoadoutsPanel_mainView__"]')) return;
+      panel = app.Adapter.visibleLoadoutPanel();
+      if (!panel) return;
+      if (!panel.querySelector('[class*="LoadoutsPanel_mainView__"]')) { notice(panel, ""); return; }
       const controller = app.Adapter.loadoutController(panel);
-      if (!controller) return;
+      if (!controller) { notice(panel, "配装总览尚未读取到游戏组件，请重新打开配装页。"); return; }
       const prior = installed.get(controller);
-      if (prior) prior.panel = panel;
+      if (prior) { prior.panel = panel; notice(panel, prior.failure || ""); }
       else if (controller.state.selectedCharacterLoadoutId === null) {
         const game = gameRuntime();
-        if (game) install(controller, panel, game);
+        if (game) { install(controller, panel, game); notice(panel, installed.get(controller)?.failure || ""); }
+        else notice(panel, "配装总览未能访问游戏组件，请确认脚本管理器允许脚本在游戏页面运行，再刷新游戏。");
       }
-    } catch (_) { /* Keep the native list usable if a game update changes the integration. */ }
+    } catch (_) {
+      if (panel) notice(panel, "配装总览初始化失败，已保留原生列表。请更新脚本后刷新游戏。");
+    }
   }
 
   function start() {

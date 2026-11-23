@@ -46,10 +46,7 @@
           safe.shouldHideSelectedItemCount = true;
           return h("div", { key: node.key, className: "mwi-virtual-slot" },
             h("div", { title: label, "aria-label": label, role: "img", tabIndex: 0 },
-              h("div", { inert: "", "aria-hidden": true }, React.cloneElement(node, safe))),
-            p.combatTriggers && h("details", { className: "mwi-virtual-trigger" },
-              h("summary", { "aria-label": label + "的触发条件" }, "⚙"),
-              h("p", null, app.Adapter.describe({ props: nativeProps }, { kind: "ability_trigger" }, p.combatTriggers))));
+              h("div", { inert: "", "aria-hidden": true }, React.cloneElement(node, safe))));
         }
         return React.cloneElement(node, null, ...children(node).filter(node => !part(node, "buttonsContainer")).map(decorate));
       }
@@ -63,10 +60,10 @@
         if (this.state.failed && previous.snapshot !== this.props.snapshot) this.setState({ failed: false });
       }
       render() {
-        if (this.state.failed) return h("p", null, "图标预览暂不可用，请展开文字与触发条件查看。");
+        if (this.state.failed) return h("p", null, "图标预览暂不可用，请刷新游戏后重试。");
         let slots;
         try { slots = preview(this.props.snapshot, this.props.nativeProps); }
-        catch (_) { return h("p", null, "图标预览暂不可用，请展开文字与触发条件查看。"); }
+        catch (_) { return h("p", null, "图标预览暂不可用，请刷新游戏后重试。"); }
         return h("div", { className: "mwi-virtual-native" }, slots);
       }
     };

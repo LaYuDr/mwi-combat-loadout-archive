@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.12] - 2026-11-23
+
+### Changed
+
+- 调整配装总览的游戏组件读取，兼容脚本全局与页面全局分离的环境，并显示初始化失败提示；移除虚拟配装预览的文字列表与齿轮入口。按用户要求跳过测试，实际受影响环境待确认。
+
 ## [0.2.11] - 2026-11-23
 
 ### Changed

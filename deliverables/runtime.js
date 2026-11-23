@@ -1313,10 +1313,7 @@
           safe.shouldHideSelectedItemCount = true;
           return h("div", { key: node.key, className: "mwi-virtual-slot" },
             h("div", { title: label, "aria-label": label, role: "img", tabIndex: 0 },
-              h("div", { inert: "", "aria-hidden": true }, React.cloneElement(node, safe))),
-            p.combatTriggers && h("details", { className: "mwi-virtual-trigger" },
-              h("summary", { "aria-label": label + "的触发条件" }, "⚙"),
-              h("p", null, app.Adapter.describe({ props: nativeProps }, { kind: "ability_trigger" }, p.combatTriggers))));
+              h("div", { inert: "", "aria-hidden": true }, React.cloneElement(node, safe))));
         }
         return React.cloneElement(node, null, ...children(node).filter(node => !part(node, "buttonsContainer")).map(decorate));
       }
@@ -1330,10 +1327,10 @@
         if (this.state.failed && previous.snapshot !== this.props.snapshot) this.setState({ failed: false });
       }
       render() {
-        if (this.state.failed) return h("p", null, "图标预览暂不可用，请展开文字与触发条件查看。");
+        if (this.state.failed) return h("p", null, "图标预览暂不可用，请刷新游戏后重试。");
         let slots;
         try { slots = preview(this.props.snapshot, this.props.nativeProps); }
-        catch (_) { return h("p", null, "图标预览暂不可用，请展开文字与触发条件查看。"); }
+        catch (_) { return h("p", null, "图标预览暂不可用，请刷新游戏后重试。"); }
         return h("div", { className: "mwi-virtual-native" }, slots);
       }
     };
@@ -1414,18 +1411,11 @@
     class Snapshot extends React.Component {
       render() {
         const { snapshot, nativeProps } = this.props, raw = snapshot.raw;
-        const empty = { ...raw, wearableMap: {}, abilityMap: {}, foodItemHrids: [], drinkItemHrids: [],
-          abilityCombatTriggersMap: {}, consumableCombatTriggersMap: {} };
-        const changes = app.Core.diff(empty, snapshot);
-        const text = h("dl", { className: "mwi-virtual-items" },
-          changes.map((change, i) => h(React.Fragment, { key: i },
-            h("dt", null, change.label), h("dd", null, app.Adapter.describe({ props: nativeProps }, change, change.to)))));
         return h("div", null,
           h("div", { className: "mwi-virtual-options", "aria-label": "配装选项（只读）" },
             [["默认", raw.isDefault], ["缺失不提醒", raw.suppressValidation], ["最高强化", !raw.useExactEnhancement]].map(([label, checked]) =>
               h("label", { key: label }, h("input", { type: "checkbox", checked: Boolean(checked), disabled: true }), label))),
-          NativePreview && h(NativePreview, { snapshot, nativeProps }),
-          h("details", null, h("summary", null, "文字与触发条件"), text));
+          NativePreview ? h(NativePreview, { snapshot, nativeProps }) : h("p", null, "图标预览暂不可用，请刷新游戏后重试。"));
       }
     }
     return class VirtualPanel extends React.Component {
@@ -1495,7 +1485,7 @@
 (function (root) {
   "use strict";
   const app = root.MWILoadoutScenes;
-  const css = "[data-mwi-loadout-overview] {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));\n  align-items: start;\n  gap: .75rem;\n  text-align: start;\n}\n.mwi-overview-card {\n  container-type: inline-size;\n  min-width: 0;\n  border: 1px solid var(--color-divider, #4c5677);\n  border-radius: var(--radius-sm, 8px);\n  background: var(--color-midnight-700, #202333);\n  color: var(--color-text-dark-mode, #f1f2fa);\n}\n.mwi-overview-card-head {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: .25rem .5rem;\n  min-height: 2.75rem;\n  padding: .35rem .625rem;\n  background: var(--color-midnight-500, #2b3045);\n  border-block-end: 1px solid var(--color-divider, #4c5677);\n  border-start-start-radius: inherit;\n  border-start-end-radius: inherit;\n}\n.mwi-overview-card-head h3 {\n  display: flex;\n  align-items: center;\n  flex: 1 1 6rem;\n  min-width: 0;\n  margin: 0;\n  font-size: 1rem;\n  font-weight: 600;\n  overflow-wrap: anywhere;\n}\n.mwi-overview-options {\n  display: flex;\n  align-items: center;\n  gap: .25rem .625rem;\n  padding: .125rem .625rem 0;\n  white-space: nowrap;\n}\n.mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { margin: 0; min-height: 2rem; }\n.mwi-overview-options [class*=\"MuiTypography-root\"] { font-size: .8rem; }\n.mwi-overview-button {\n  color: var(--color-text-dark-mode, #f1f2fa);\n  background: var(--color-midnight-500, #2b3045);\n  border: 1px solid var(--color-space-300, #7d87b0);\n  border-radius: var(--radius-sm, 5px);\n  font: inherit;\n  font-size: .82rem;\n  padding: .3rem .55rem;\n  min-height: 2rem;\n  cursor: pointer;\n}\n.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }\n.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }\n.mwi-overview-toolbar { display: flex; flex-wrap: wrap; gap: .375rem; }\n.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] { min-width: 0; width: 100%; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));\n  width: 100%;\n  box-sizing: border-box;\n  padding: .625rem;\n  gap: .625rem;\n  background: transparent;\n}\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_playerModel__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_abilities__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }\n.mwi-overview-has-requirement { position: relative; }\n.mwi-overview-requirement {\n  position: absolute;\n  inset: .125rem .1875rem auto auto;\n  z-index: 1;\n  color: #ffc268;\n  font-size: .8125rem;\n  font-variant-numeric: tabular-nums;\n  font-weight: 600;\n  line-height: 1;\n  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;\n  pointer-events: none;\n}\n@media (pointer: coarse) {\n  .mwi-overview-button { min-height: 2.75rem; }\n  .mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { min-height: 2.75rem; }\n}\n\n.mwi-overview-cloud { color: #c3c6db; font-size: .78rem; line-height: 1.4; }\n.mwi-overview-card-head .mwi-overview-cloud { flex: 0 0 100%; }\n.mwi-overview-cloud.mwi-cloud-warning { color: #ffd27a; }\n\n.mwi-virtual-panel { margin-block: 1.25rem; text-align: start; color: #eeeef5; }\n.mwi-virtual-panel h2 { font-size: 1.1rem; }\n.mwi-virtual-panel p { font-size: .85rem; color: #c3c6db; margin: .4rem 0; }\n.mwi-virtual-panel form, .mwi-virtual-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }\n.mwi-virtual-panel input, .mwi-virtual-panel select { background: #171822; color: #eeeef5; border: 1px solid #7d87b0; border-radius: 5px; padding: .5rem; min-width: 0; max-width: 100%; font: inherit; }\n.mwi-virtual-panel form input { flex: 1 1 16rem; }\n.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }\n.mwi-virtual-card { padding: 0; overflow-wrap: anywhere; min-width: 0; }\n.mwi-virtual-card h3 { font-size: 1rem; margin: 0; }\n.mwi-virtual-body { padding: .5rem .625rem; }\n.mwi-virtual-management { border-top: 1px solid #4c5677; margin-top: .5rem; padding-top: .5rem; }\n.mwi-virtual-card .mwi-virtual-options { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .85rem; }\n.mwi-virtual-card .mwi-virtual-options label { display: flex; align-items: center; gap: .2rem; margin: 0; }\n.mwi-virtual-card .mwi-virtual-options input { margin: 0; accent-color: #bdc7ed; }\n.mwi-virtual-card a { color: #bbcaff; }\n.mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }\n.mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }\n.mwi-virtual-items { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .4rem .7rem; font-size: .85rem; }\n.mwi-virtual-items dd { margin: 0; white-space: pre-wrap; }\n.mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }\n.mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }\n\n.mwi-virtual-native { container-type: inline-size; margin-block: .5rem; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_details__\"] { width: 100%; min-width: 0; margin: 0; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 1.5rem) / 5)));\n  width: 100%; min-width: 0; box-sizing: border-box; padding: .5rem;\n  gap: .75rem; background: transparent;\n}\n.mwi-virtual-native [class*=\"LoadoutsPanel_playerModel__\"],\n.mwi-virtual-native [class*=\"LoadoutsPanel_abilities__\"],\n.mwi-virtual-native [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-virtual-slot { min-width: 0; width: fit-content; max-width: 100%; border-radius: 5px; }\n.mwi-virtual-slot [inert] { pointer-events: none; }\n.mwi-virtual-trigger { position: relative; }\n.mwi-virtual-trigger summary { list-style: none; text-align: center; font-size: 1.4rem; line-height: 1.2; padding: .1rem 0; color: #90c9fa; }\n.mwi-virtual-trigger summary::-webkit-details-marker { display: none; }\n.mwi-virtual-trigger p { position: absolute; z-index: 3; width: 15rem; max-width: 75vw; padding: .6rem; white-space: pre-wrap; background: #171822; border: 1px solid #7d87b0; border-radius: 5px; box-shadow: 0 4px 12px #0008; }\n.mwi-virtual-native [class*=\"Item_count__\"],\n.mwi-virtual-native [class*=\"Ability_level__\"],\n.mwi-virtual-native [class*=\"CombatTriggersSetting_combatTriggersSetting__\"] { display: none; }\n";
+  const css = "[data-mwi-loadout-overview] {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));\n  align-items: start;\n  gap: .75rem;\n  text-align: start;\n}\n.mwi-overview-card {\n  container-type: inline-size;\n  min-width: 0;\n  border: 1px solid var(--color-divider, #4c5677);\n  border-radius: var(--radius-sm, 8px);\n  background: var(--color-midnight-700, #202333);\n  color: var(--color-text-dark-mode, #f1f2fa);\n}\n.mwi-overview-card-head {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: .25rem .5rem;\n  min-height: 2.75rem;\n  padding: .35rem .625rem;\n  background: var(--color-midnight-500, #2b3045);\n  border-block-end: 1px solid var(--color-divider, #4c5677);\n  border-start-start-radius: inherit;\n  border-start-end-radius: inherit;\n}\n.mwi-overview-card-head h3 {\n  display: flex;\n  align-items: center;\n  flex: 1 1 6rem;\n  min-width: 0;\n  margin: 0;\n  font-size: 1rem;\n  font-weight: 600;\n  overflow-wrap: anywhere;\n}\n.mwi-overview-options {\n  display: flex;\n  align-items: center;\n  gap: .25rem .625rem;\n  padding: .125rem .625rem 0;\n  white-space: nowrap;\n}\n.mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { margin: 0; min-height: 2rem; }\n.mwi-overview-options [class*=\"MuiTypography-root\"] { font-size: .8rem; }\n.mwi-overview-button {\n  color: var(--color-text-dark-mode, #f1f2fa);\n  background: var(--color-midnight-500, #2b3045);\n  border: 1px solid var(--color-space-300, #7d87b0);\n  border-radius: var(--radius-sm, 5px);\n  font: inherit;\n  font-size: .82rem;\n  padding: .3rem .55rem;\n  min-height: 2rem;\n  cursor: pointer;\n}\n.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }\n.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }\n.mwi-overview-toolbar { display: flex; flex-wrap: wrap; gap: .375rem; }\n.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] { min-width: 0; width: 100%; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));\n  width: 100%;\n  box-sizing: border-box;\n  padding: .625rem;\n  gap: .625rem;\n  background: transparent;\n}\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_playerModel__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_abilities__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }\n.mwi-overview-has-requirement { position: relative; }\n.mwi-overview-requirement {\n  position: absolute;\n  inset: .125rem .1875rem auto auto;\n  z-index: 1;\n  color: #ffc268;\n  font-size: .8125rem;\n  font-variant-numeric: tabular-nums;\n  font-weight: 600;\n  line-height: 1;\n  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;\n  pointer-events: none;\n}\n@media (pointer: coarse) {\n  .mwi-overview-button { min-height: 2.75rem; }\n  .mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { min-height: 2.75rem; }\n}\n\n.mwi-overview-cloud { color: #c3c6db; font-size: .78rem; line-height: 1.4; }\n.mwi-overview-card-head .mwi-overview-cloud { flex: 0 0 100%; }\n.mwi-overview-cloud.mwi-cloud-warning { color: #ffd27a; }\n\n.mwi-virtual-panel { margin-block: 1.25rem; text-align: start; color: #eeeef5; }\n.mwi-virtual-panel h2 { font-size: 1.1rem; }\n.mwi-virtual-panel p { font-size: .85rem; color: #c3c6db; margin: .4rem 0; }\n.mwi-virtual-panel form, .mwi-virtual-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }\n.mwi-virtual-panel input, .mwi-virtual-panel select { background: #171822; color: #eeeef5; border: 1px solid #7d87b0; border-radius: 5px; padding: .5rem; min-width: 0; max-width: 100%; font: inherit; }\n.mwi-virtual-panel form input { flex: 1 1 16rem; }\n.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }\n.mwi-virtual-card { padding: 0; overflow-wrap: anywhere; min-width: 0; }\n.mwi-virtual-card h3 { font-size: 1rem; margin: 0; }\n.mwi-virtual-body { padding: .5rem .625rem; }\n.mwi-virtual-management { border-top: 1px solid #4c5677; margin-top: .5rem; padding-top: .5rem; }\n.mwi-virtual-card .mwi-virtual-options { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .85rem; }\n.mwi-virtual-card .mwi-virtual-options label { display: flex; align-items: center; gap: .2rem; margin: 0; }\n.mwi-virtual-card .mwi-virtual-options input { margin: 0; accent-color: #bdc7ed; }\n.mwi-virtual-card a { color: #bbcaff; }\n.mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }\n.mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }\n.mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }\n.mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }\n\n.mwi-virtual-native { container-type: inline-size; margin-block: .5rem; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_details__\"] { width: 100%; min-width: 0; margin: 0; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 1.5rem) / 5)));\n  width: 100%; min-width: 0; box-sizing: border-box; padding: .5rem;\n  gap: .75rem; background: transparent;\n}\n.mwi-virtual-native [class*=\"LoadoutsPanel_playerModel__\"],\n.mwi-virtual-native [class*=\"LoadoutsPanel_abilities__\"],\n.mwi-virtual-native [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-virtual-slot { min-width: 0; width: fit-content; max-width: 100%; border-radius: 5px; }\n.mwi-virtual-slot [inert] { pointer-events: none; }\n.mwi-virtual-native [class*=\"Item_count__\"],\n.mwi-virtual-native [class*=\"Ability_level__\"],\n.mwi-virtual-native [class*=\"CombatTriggersSetting_combatTriggersSetting__\"] { display: none; }\n";
   const marker = "data-mwi-loadout-overview";
   const collapseKey = owner => `mwi-layu:loadout-overview:collapsed:v1:${owner}`;
   const installed = new WeakMap();
@@ -1507,11 +1497,27 @@
   ];
   let runtime, showGrid = true;
 
+  function notice(panel, message) {
+    let node = panel.querySelector("[data-mwi-overview-status]");
+    if (!message) { node?.remove(); return; }
+    if (!node) {
+      node = document.createElement("p");
+      node.setAttribute("data-mwi-overview-status", "");
+      node.setAttribute("role", "status");
+      node.className = "mwi-overview-notice";
+      panel.prepend(node);
+    }
+    if (node.textContent !== message) node.textContent = message;
+  }
+
   // The game bundles React and its cache codec in webpack 4. Reuse the loaded
   // exports so its components keep their context and renderer in the same tree.
   function gameRuntime() {
     if (runtime) return runtime;
-    const chunks = root.webpackJsonprpg_web;
+    // With GM grants, the installed script's global can differ from the page
+    // global. The development loader already runs in the page world.
+    const page = typeof unsafeWindow === "undefined" ? root : unsafeWindow;
+    const chunks = page.webpackJsonprpg_web || root.webpackJsonprpg_web;
     if (!Array.isArray(chunks) || chunks.push === Array.prototype.push) return null;
     const id = "mwi-layu-loadout-overview-runtime";
     const probe = [[], { [id]: (module, exports, require) => {
@@ -1695,7 +1701,8 @@
 
   function install(controller, panel, { React, codec }) {
     if (!(controller instanceof React.Component) || typeof controller.renderLoadout !== "function" ||
-        typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
+        typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function")
+      throw Error("配装总览暂不兼容当前游戏组件，请更新脚本后刷新游戏。");
     const render = controller.render;
     const CloudLabel = makeCloudLabel(React);
     const VirtualPanel = app.makeVirtualPanel?.(React, app.makeVirtualPreview?.(React, controller.constructor));
@@ -1743,9 +1750,10 @@
 
     function renderOverview(native) {
       const main = child(React, native, "mainView"), list = child(React, main, "characterLoadouts");
-      if (!list) return native;
+      if (!list) throw Error("配装总览未能识别当前列表，请更新脚本后刷新游戏。");
       const { props } = controller, owner = props.characterInfo?.characterID;
-      if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function") return native;
+      if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function")
+        throw Error("配装总览所需数据尚未就绪，请重新打开配装页。");
       const rows = children(React, list);
       if (!rows.length && !VirtualPanel) return native;
       if (collapsedOwner !== owner) {
@@ -1798,30 +1806,41 @@
         .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));
     }
 
-    if (typeof render !== "function") return;
+    if (typeof render !== "function") throw Error("配装总览暂不兼容当前游戏组件，请更新脚本后刷新游戏。");
     controller.render = function () {
       const native = render.call(this);
       if (this.state.selectedCharacterLoadoutId !== null) return native;
-      try { return renderOverview(native); }
-      catch (_) { return native; }
+      try {
+        const result = renderOverview(native);
+        mounted.failure = "";
+        return result;
+      } catch (_) {
+        mounted.failure = "配装总览未能显示，已保留原生列表。请更新脚本后刷新游戏。";
+        return native;
+      }
     };
     installed.set(controller, mounted);
     controller.forceUpdate();
   }
 
   function sync() {
+    let panel;
     try {
-      const panel = app.Adapter.visibleLoadoutPanel();
-      if (!panel?.querySelector('[class*="LoadoutsPanel_mainView__"]')) return;
+      panel = app.Adapter.visibleLoadoutPanel();
+      if (!panel) return;
+      if (!panel.querySelector('[class*="LoadoutsPanel_mainView__"]')) { notice(panel, ""); return; }
       const controller = app.Adapter.loadoutController(panel);
-      if (!controller) return;
+      if (!controller) { notice(panel, "配装总览尚未读取到游戏组件，请重新打开配装页。"); return; }
       const prior = installed.get(controller);
-      if (prior) prior.panel = panel;
+      if (prior) { prior.panel = panel; notice(panel, prior.failure || ""); }
       else if (controller.state.selectedCharacterLoadoutId === null) {
         const game = gameRuntime();
-        if (game) install(controller, panel, game);
+        if (game) { install(controller, panel, game); notice(panel, installed.get(controller)?.failure || ""); }
+        else notice(panel, "配装总览未能访问游戏组件，请确认脚本管理器允许脚本在游戏页面运行，再刷新游戏。");
       }
-    } catch (_) { /* Keep the native list usable if a game update changes the integration. */ }
+    } catch (_) {
+      if (panel) notice(panel, "配装总览初始化失败，已保留原生列表。请更新脚本后刷新游戏。");
+    }
   }
 
   function start() {
@@ -2275,7 +2294,7 @@
     const style = el("style", '[data-mwi-scene-change] { outline: 2px solid #ffd27a !important; outline-offset: 3px !important; } [data-mwi-scene-target] { outline: 3px solid #70b7ff !important; outline-offset: -3px !important; box-shadow: inset 0 0 0 5px #171822 !important; }');
     style.id = "mwi-loadout-scenes-highlight-style"; document.head.append(style);
     const panelSelector = '[class*="LoadoutsPanel_loadoutsPanel__"]';
-    const ownedSelector = '.mwi-overview-cloud, #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
+    const ownedSelector = '.mwi-overview-cloud, [data-mwi-overview-status], #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
     const options = { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "aria-hidden", "style", "class"] };
     const observer = new MutationObserver(records => {
       const relevant = records.some(record => {
