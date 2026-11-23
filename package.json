@@ -1,8 +1,8 @@
 {
   "name": "mwi-combat-loadout-archive",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": true,
-  "description": "银河奶牛配装助手：总览并编辑原生配装，保存场景子方案、高亮切换差异，记住生活与战斗项目的配装选择，支持子方案备份。",
+  "description": "银河奶牛配装助手：总览并编辑原生配装，保存场景子方案、高亮切换差异，记住生活与战斗项目的配装选择，支持子方案备份与跨设备云同步。",
   "scripts": {
     "dev": "node source/dev_server.cjs",
     "build": "node source/build.cjs",

@@ -57,7 +57,7 @@
 }
 .mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }
 .mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }
-.mwi-overview-toggle { align-self: flex-start; }
+.mwi-overview-toolbar { display: flex; flex-wrap: wrap; gap: .375rem; }
 .mwi-overview-notice { padding: .5rem .625rem; margin: 0; }
 [data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_selectedLoadout__"] { padding: 0; align-items: stretch; }
 [data-mwi-loadout-overview] .mwi-overview-card [class*="LoadoutsPanel_details__"] { min-width: 0; width: 100%; margin: 0; }
@@ -90,3 +90,24 @@
   .mwi-overview-button { min-height: 2.75rem; }
   .mwi-overview-options [class*="MuiFormControlLabel-root"] { min-height: 2.75rem; }
 }
+
+.mwi-overview-cloud { color: #c3c6db; font-size: .78rem; line-height: 1.4; }
+.mwi-overview-card-head .mwi-overview-cloud { flex: 0 0 100%; }
+.mwi-overview-cloud.mwi-cloud-warning { color: #ffd27a; }
+
+.mwi-virtual-panel { margin-block: 1.25rem; text-align: start; color: #eeeef5; }
+.mwi-virtual-panel h2 { font-size: 1.1rem; }
+.mwi-virtual-panel p { font-size: .85rem; color: #c3c6db; margin: .4rem 0; }
+.mwi-virtual-panel form, .mwi-virtual-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+.mwi-virtual-panel input, .mwi-virtual-panel select { background: #171822; color: #eeeef5; border: 1px solid #7d87b0; border-radius: 5px; padding: .5rem; min-width: 0; max-width: 100%; font: inherit; }
+.mwi-virtual-panel form input { flex: 1 1 16rem; }
+.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }
+.mwi-virtual-card { padding: .8rem; background: #202333; border: 1px solid #4c5677; border-radius: 8px; overflow-wrap: anywhere; min-width: 0; }
+.mwi-virtual-card h3 { font-size: 1rem; margin: 0 0 .5rem; }
+.mwi-virtual-card a { color: #bbcaff; }
+.mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }
+.mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }
+.mwi-virtual-items { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .4rem .7rem; font-size: .85rem; }
+.mwi-virtual-items dd { margin: 0; white-space: pre-wrap; }
+.mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }
+.mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }

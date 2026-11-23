@@ -3,6 +3,7 @@
   const app = root.MWILoadoutScenes;
   const css = "__OVERVIEW_CSS__";
   const marker = "data-mwi-loadout-overview";
+  const collapseKey = owner => `mwi-layu:loadout-overview:collapsed:v1:${owner}`;
   const installed = new WeakMap();
   const slotTypes = new Set(["equipment", "ability", "food", "drink", "ability_trigger", "food_trigger", "drink_trigger"]);
   const optionLabels = [
@@ -56,6 +57,13 @@
     return requirements;
   }
 
+  function readCollapsed(owner) {
+    try {
+      const ids = JSON.parse(root.localStorage.getItem(collapseKey(owner)));
+      return new Set(Array.isArray(ids) ? ids.filter(id => Number.isSafeInteger(id) && id > 0) : []);
+    } catch (_) { return null; }
+  }
+
   const hasClass = (node, name) => typeof node?.props?.className === "string" && node.props.className.includes(`LoadoutsPanel_${name}__`);
   const children = (React, node) => React.Children.toArray(node?.props?.children);
   const child = (React, node, name) => children(React, node).find(entry => hasClass(entry, name));
@@ -101,7 +109,43 @@
     return React.cloneElement(setup, null, sections);
   }
 
-  function makeCard(React, NativePanel) {
+  // Only the small status labels subscribe. An update never rerenders native slots.
+  function makeCloudLabel(React) {
+    return class CloudLabel extends React.Component {
+      componentDidMount() { this.listen(); }
+      componentDidUpdate(prev) {
+        if (prev.owner !== this.props.owner || prev.ids !== this.props.ids) this.listen();
+      }
+      componentWillUnmount() { this.unsubscribe?.(); }
+      listen() {
+        this.unsubscribe?.();
+        const { owner, ids } = this.props;
+        const warnings = new Set();
+        const refresh = id => {
+          const info = app.Cloud.info(owner, id);
+          if (!this.props.tally) { this.paint("云同步 · " + info.label, info.warning); return; }
+          if (info.warning) warnings.add(id);
+          else warnings.delete(id);
+          this.paint(warnings.size ? warnings.size + " 套配装待处理" : "", warnings.size > 0);
+        };
+        const stops = ids.split(",").map(Number).map(id => {
+          refresh(id);
+          return app.Cloud.subscribe(owner, id, () => refresh(id));
+        });
+        this.unsubscribe = () => stops.forEach(stop => stop());
+      }
+      paint(text, warning) {
+        if (this.label.textContent !== text) this.label.textContent = text;
+        this.label.hidden = !text;
+        this.label.classList.toggle("mwi-cloud-warning", warning);
+      }
+      render() {
+        return React.createElement("span", { className: "mwi-overview-cloud", ref: node => { this.label = node; } });
+      }
+    };
+  }
+
+  function makeCard(React, NativePanel, CloudLabel) {
     const h = React.createElement;
     class NativeSlots extends NativePanel {
       constructor(props) {
@@ -114,10 +158,11 @@
       render() {
         const shell = this.renderLoadout();
         if (!hasClass(shell, "selectedLoadout")) throw Error("配装详情结构已变化");
-        const setup = cardSetup(React, shell, this.props.overviewRequirements);
+        const { overviewContentId, overviewRequirements } = this.props;
         const details = child(React, shell, "details");
         const options = this.props.overviewCanUpdateOptions && cardOptions(React, details, this);
-        return React.cloneElement(shell, null, React.cloneElement(details, null, options, setup));
+        const setup = cardSetup(React, shell, overviewRequirements);
+        return React.cloneElement(shell, null, React.cloneElement(details, { id: overviewContentId }, options, setup));
       }
     }
     // Keep a malformed native card from taking down the surrounding game UI.
@@ -136,14 +181,20 @@
       updateSlot = change => this.update(this.props.sendSlot, change);
       updateOptions = change => this.update(this.props.sendOptions, change);
       render() {
-        const { id, name, icon, openDetails, nativeProps } = this.props;
+        const { id, name, icon, openDetails, toggleCard, nativeProps, overviewCollapsed } = this.props;
+        const { overviewContentId } = nativeProps;
+        const toggleLabel = overviewCollapsed ? "展开" : "收起";
+        const content = overviewCollapsed ? h("div", { id: overviewContentId, hidden: true })
+          : this.state.failed ? h("p", { id: overviewContentId, className: "mwi-overview-notice", role: "status" }, "这套配装暂时无法展开，可以打开详情编辑。")
+            : h(NativeSlots, { ...nativeProps, updateLoadoutSlotHandler: this.updateSlot, updateLoadoutHandler: this.updateOptions });
         return h("article", { ref: this.rememberCard, className: "mwi-overview-card", "data-mwi-overview-id": id, "aria-label": name },
           h("header", { className: "mwi-overview-card-head" },
             h("h3", null, icon, name),
-            h("button", { type: "button", className: "mwi-overview-button", "aria-label": `${name}的详情和子方案`, onClick: openDetails }, "详情")),
-          this.state.failed ? h("p", { className: "mwi-overview-notice", role: "status" }, "这套配装暂时无法展开，可以打开详情编辑。")
-            : h(NativeSlots, { ...nativeProps, updateLoadoutSlotHandler: this.updateSlot, updateLoadoutHandler: this.updateOptions }),
-          this.state.notice && h("p", { className: "mwi-overview-notice", role: "status" }, this.state.notice));
+            h("button", { type: "button", className: "mwi-overview-button",
+              "aria-label": `${toggleLabel}${name}`, "aria-expanded": !overviewCollapsed, "aria-controls": overviewContentId, onClick: toggleCard }, toggleLabel),
+            h("button", { type: "button", className: "mwi-overview-button", "aria-label": `${name}的详情和子方案`, onClick: openDetails }, "详情"),
+            app.Cloud && h(CloudLabel, { owner: nativeProps.characterInfo.characterID, ids: String(id) })),
+          content, !overviewCollapsed && this.state.notice && h("p", { className: "mwi-overview-notice", role: "status" }, this.state.notice));
       }
     };
   }
@@ -152,9 +203,26 @@
     if (!(controller instanceof React.Component) || typeof controller.renderLoadout !== "function" ||
         typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
     const render = controller.render;
-    const Card = makeCard(React, controller.constructor);
+    const CloudLabel = makeCloudLabel(React);
+    const VirtualPanel = app.makeVirtualPanel?.(React);
+    const Card = makeCard(React, controller.constructor, CloudLabel);
     const mounted = { panel, requirements: readRequirements(codec) };
+    let collapsed = new Set(), collapsedOwner, collapseSaveFailed = false;
     const h = React.createElement;
+
+    function changeCollapsed(owner, change) {
+      const { characterInfo, characterLoadoutDict } = controller.props;
+      if (!showGrid || owner !== collapsedOwner || owner !== characterInfo?.characterID) return;
+      // Use the latest saved choices so edits in another tab are preserved.
+      if (!collapseSaveFailed) collapsed = readCollapsed(owner) ?? collapsed;
+      change(collapsed);
+      for (const id of collapsed) if (!Object.hasOwn(characterLoadoutDict, id)) collapsed.delete(id);
+      try {
+        root.localStorage.setItem(collapseKey(owner), JSON.stringify([...collapsed]));
+        collapseSaveFailed = false;
+      } catch (_) { collapseSaveFailed = true; }
+      controller.forceUpdate();
+    }
 
     function currentCard(owner, id, element, change) {
       const { props, state } = controller;
@@ -164,7 +232,7 @@
     }
 
     function sendSlot(owner, id, element, change) {
-      if (!currentCard(owner, id, element, change) || !slotTypes.has(change.slotType) ||
+      if (collapsed.has(id) || !currentCard(owner, id, element, change) || !slotTypes.has(change.slotType) ||
           typeof controller.props.updateLoadoutSlotHandler !== "function") return false;
       controller.props.updateLoadoutSlotHandler(change);
       return true;
@@ -172,7 +240,7 @@
 
     function sendOptions(owner, id, element, change) {
       const { props } = controller;
-      if (!currentCard(owner, id, element, change) || typeof props.updateLoadoutHandler !== "function" ||
+      if (collapsed.has(id) || !currentCard(owner, id, element, change) || typeof props.updateLoadoutHandler !== "function" ||
           change.name !== props.characterLoadoutDict[id].name ||
           ![change.isDefault, change.suppressValidation, change.useExactEnhancement].every(value => typeof value === "boolean")) return false;
       props.updateLoadoutHandler(change);
@@ -185,26 +253,51 @@
       const { props } = controller, owner = props.characterInfo?.characterID;
       if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function") return native;
       const rows = children(React, list);
-      if (!rows.length) return native;
+      if (!rows.length && !VirtualPanel) return native;
+      if (collapsedOwner !== owner) {
+        collapsed = readCollapsed(owner) ?? new Set();
+        collapsedOwner = owner;
+        collapseSaveFailed = false;
+      }
       const cards = rows.map(row => {
         const id = row.props?.["data-loadout-id"], loadout = props.characterLoadoutDict[id];
         if (!Number.isSafeInteger(id) || loadout?.id !== id || typeof loadout.name !== "string" ||
             typeof row.props.onClick !== "function") throw Error("配装列表结构已变化");
+        const overviewCollapsed = collapsed.has(id);
         return h(Card, {
-          key: `${owner}:${id}`, id, name: loadout.name,
+          key: `${owner}:${id}`, id, name: loadout.name, overviewCollapsed,
           icon: children(React, row)[1], openDetails: row.props.onClick,
+          toggleCard: () => changeCollapsed(owner, ids => {
+            if (overviewCollapsed) ids.delete(id);
+            else ids.add(id);
+          }),
           nativeProps: { ...props, overviewId: id, overviewRequirements: mounted.requirements,
+            overviewContentId: `mwi-loadout-content-${owner}-${id}`,
             overviewCanUpdateOptions: typeof props.updateLoadoutHandler === "function" },
           sendSlot: (element, change) => sendSlot(owner, id, element, change),
           sendOptions: (element, change) => sendOptions(owner, id, element, change)
         });
       });
       const toggle = h("button", {
-        key: "mwi-overview-toggle", type: "button", className: "mwi-overview-button mwi-overview-toggle",
+        key: "mwi-overview-toggle", type: "button", className: "mwi-overview-button",
         onClick: () => { showGrid = !showGrid; controller.forceUpdate(); }
       }, showGrid ? "原生列表" : "配装总览");
-      const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toggle,
+      const allCollapsed = cards.every(card => collapsed.has(card.props.id));
+      const toggleAll = showGrid && h("button", {
+        key: "mwi-overview-toggle-all", type: "button", className: "mwi-overview-button",
+        onClick: () => changeCollapsed(owner, ids => {
+          for (const card of cards) {
+            if (allCollapsed) ids.delete(card.props.id);
+            else ids.add(card.props.id);
+          }
+        })
+      }, allCollapsed ? "全部展开" : "全部收起");
+      const toolbar = h("div", { key: "mwi-overview-toolbar", className: "mwi-overview-toolbar" }, toggle, toggleAll,
+        showGrid && app.Cloud && h(CloudLabel, { key: "sync", owner, ids: cards.map(card => card.props.id).join(","), tally: true }),
+        showGrid && collapseSaveFailed && h("span", { role: "status" }, "折叠状态未能保存，刷新后可能恢复之前的状态。"));
+      const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toolbar,
         showGrid ? h("div", { key: "mwi-overview-grid", [marker]: "" }, cards) : entry]);
+      if (VirtualPanel) mainChildren.push(h(VirtualPanel, { key: "virtual-" + owner, owner, nativeProps: props }));
       const updatedMain = React.cloneElement(main, null, mainChildren);
       return React.cloneElement(native, null, children(React, native)
         .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));

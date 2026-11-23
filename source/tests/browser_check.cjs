@@ -335,9 +335,77 @@ async function main() {
       await p.locator("#mwi-loadout-scenes-host").waitFor(); await c.close();
     }
     const dev = await browser.newContext(); await dev.route("**/*", route => route.fulfill({ contentType: "text/html", body: fixture }));
-    await dev.addInitScript({ content: `window.devRequests=[];window.GM_xmlhttpRequest=o=>{devRequests.push(o.url);o.onload({status:200,responseText:${JSON.stringify(read('runtime.js'))}})};window.GM_addElement=(p,t,a)=>{const e=Object.assign(document.createElement(t),a);p.append(e);return e};` + read("mwi_combat_loadout_archive.dev.user.js") });
+    await dev.addInitScript({ content: `window.devRequests=[];window.GM_xmlhttpRequest=o=>{
+      devRequests.push(o.url);
+      const text=o.url.startsWith('http://127.0.0.1:4178/runtime.js?') ? ${JSON.stringify(read('runtime.js'))} :
+        JSON.stringify({clip_name:o.url.split('/').pop(),has_password:false,files:[],text_content:null});
+      o.onload({status:200,responseText:text});
+    };window.GM_addElement=(p,t,a)=>{const e=Object.assign(document.createElement(t),a);p.append(e);return e};` + read("mwi_combat_loadout_archive.dev.user.js") });
     const dp = await dev.newPage(); await dp.goto(base); await dp.locator("#mwi-loadout-scenes-host").getByRole("heading", { name: "子方案" }).waitFor();
-    assert.equal(await dp.evaluate(() => devRequests.length), 1); await dev.close();
+    await dp.waitForFunction(() => devRequests.includes("https://clipboard.im/api/clipboard/71loadout12"));
+    assert.equal(await dp.evaluate(() => devRequests.filter(url => url.startsWith("http://127.0.0.1:4178/runtime.js?")).length), 1);
+    await dev.close();
+    // Independent IndexedDB and localStorage per device; only a synthetic
+    // clipboard string crosses contexts. All HTTP traffic is intercepted.
+    const cloudTexts = new Map();
+    async function cloudDevice() {
+      const c = await browser.newContext();
+      await c.route("**/*", route => route.fulfill({ contentType: "text/html", body: fixture }));
+      await c.exposeFunction("mockClipboard", (method, url, payload) => {
+        assert.ok(["https://clipboard.im/api/clipboard/71loadout12", "https://clipboard.im/api/clipboard/71loadout0"].includes(url));
+        if (method === "PUT") cloudTexts.set(url, JSON.parse(payload).text_content);
+        else assert.equal(method, "GET");
+        return { status: 200, responseText: JSON.stringify({ clip_name: url.split("/").pop(),
+          has_password: false, files: [], text_content: cloudTexts.get(url) ?? null }) };
+      });
+      await c.addInitScript({ content: `window.GM_xmlhttpRequest=o=>window.mockClipboard(o.method,o.url,o.data).then(o.onload,o.onerror);` + read("mwi_combat_loadout_archive.user.js") });
+      const p = await c.newPage(); await p.goto(base);
+      await p.waitForFunction(() => ["尚无同步数据", "已同步"].some(label => window.MWILoadoutScenes?.Cloud?.status(71, 12).startsWith(label)));
+      return { c, p, scene: p.locator("#mwi-loadout-scenes-host") };
+    }
+    const firstDevice = await cloudDevice();
+    await firstDevice.scene.getByRole("button", { name: "新建子方案" }).click();
+    await firstDevice.scene.getByLabel("新子方案名称").fill("跨设备方案");
+    await firstDevice.scene.getByRole("button", { name: "保存", exact: true }).click();
+    await firstDevice.scene.getByText("已保存“跨设备方案”").waitFor();
+    await firstDevice.p.waitForFunction(() => window.MWILoadoutScenes.Cloud.status(71, 12).startsWith("已同步"));
+    await firstDevice.p.waitForFunction(async () => {
+      const response = await window.mockClipboard("GET", "https://clipboard.im/api/clipboard/71loadout12");
+      return JSON.parse(response.responseText).text_content?.includes("跨设备方案");
+    });
+    const nextDevice = await cloudDevice();
+    await nextDevice.scene.getByRole("button", { name: "跨设备方案", exact: true }).waitFor();
+    const panel = nextDevice.scene.locator(".cloud-panel");
+    await panel.locator(":scope > summary").click();
+    assert.equal(await panel.locator("a").getAttribute("href"), "https://clipboard.im/71loadout12");
+    await panel.getByText("1 个子方案 · 0 条行动选择").waitFor();
+    const boardKey = "https://clipboard.im/api/clipboard/71loadout12";
+    const divergent = JSON.parse(cloudTexts.get(boardKey));
+    const savedScene = divergent.scenes[0];
+    await nextDevice.p.evaluate(async () => {
+      const app = window.MWILoadoutScenes, ctx = app.Adapter.current();
+      const [scene] = await app.Store.list(ctx.scope);
+      await app.Store.mutate(ctx, scene, "rename", "本机版本");
+    });
+    divergent.scenes = [{ ...savedScene, name: "另一设备版本", revision: require("node:crypto").randomUUID(),
+      updatedAt: savedScene.updatedAt + 1, ancestors: [savedScene.revision] }];
+    cloudTexts.set(boardKey, JSON.stringify(divergent));
+    await panel.getByRole("button", { name: "立即同步" }).click();
+    await panel.locator(".cloud-compare > summary").click();
+    await panel.getByRole("button", { name: "仅保留 B" }).click();
+    await panel.getByRole("button", { name: "取消" }).click();
+    assert.equal(await panel.locator(".cloud-compare").count(), 1);
+    await panel.getByRole("button", { name: "仅保留 B" }).click();
+    await panel.getByRole("button", { name: "确认", exact: true }).click();
+    await nextDevice.scene.getByText("版本选择已存本机。").waitFor();
+    await nextDevice.p.waitForFunction(() => window.MWILoadoutScenes.Cloud.info(71, 12).kind === "ok" &&
+      window.MWILoadoutScenes.Cloud.info(71, 12).conflicts === 0);
+    await firstDevice.p.evaluate(() => window.MWILoadoutScenes.Cloud.request(71, 12));
+    const remaining = JSON.parse(cloudTexts.get(boardKey)).scenes.filter(row => row.removedAt == null);
+    assert.equal(remaining.length, 1);
+    await firstDevice.scene.getByRole("button", {name: remaining[0].name, exact: true}).waitFor();
+    await nextDevice.c.close(); await firstDevice.c.close();
+    pass("fresh second device automatically restores a scene saved on the first using a synthetic clipboard");
     const negative = await browser.newContext(); await negative.route("**/*", route => route.fulfill({ contentType: "text/html", body: fixture }));
     await negative.addInitScript({ content: read("mwi_combat_loadout_archive.user.js") }); const np = await negative.newPage(); await np.goto("https://mwi-combatsi-mulator.pages.dev/game");
     assert.equal(await np.locator("#mwi-loadout-scenes-host").count(), 0); await negative.close();

@@ -54,3 +54,19 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85em; padding:
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 
 .choices button { -webkit-touch-callout: none; user-select: none; }
+
+.cloud-panel { border-top: 1px solid var(--scene-line); margin-top: 10px; }
+.cloud-panel > summary { padding: 8px 0; }
+.cloud-panel a { color: #bbcaff; overflow-wrap: anywhere; }
+.cloud-panel a:focus-visible { outline: 2px solid #c0ccff; outline-offset: 2px; }
+.cloud-warning, .cloud-note { color: var(--scene-warn); }
+.cloud-facts { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 5px 12px; margin: 8px 0; }
+.cloud-facts dt, .cloud-privacy { color: var(--scene-muted); }
+.cloud-facts dd { margin: 0; }
+.cloud-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.cloud-feedback:empty { display: none; }
+.cloud-privacy, .cloud-facts { font-size: .88em; }
+.cloud-compare { padding: 8px; margin-top: 8px; background: var(--scene-surface); border: 1px solid var(--scene-line); border-radius: 5px; }
+.cloud-diff { list-style: none; margin: 0; padding: 0; }
+.cloud-diff li div { color: var(--scene-muted); }
+.cloud-confirm { border-inline-start: 2px solid var(--scene-warn); padding-inline-start: 8px; }

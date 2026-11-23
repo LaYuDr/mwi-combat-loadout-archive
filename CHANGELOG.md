@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.10] - 2026-11-23
+
+### Changed
+
+- 发布配装云同步、虚拟配装与订阅、配装折叠记忆等当前开发改动；按用户要求跳过测试，仅构建并核验发布产物。
+
 ## [0.2.9] - 2026-11-19
 
 ### Changed

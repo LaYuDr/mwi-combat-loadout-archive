@@ -72,6 +72,7 @@ function parseArguments(argv) {
   const options = {
     dryRun: false,
     verifyOnly: false,
+    skipTests: false,
     version: null,
     message: null,
     notes: null
@@ -80,6 +81,7 @@ function parseArguments(argv) {
     const argument = argv[index];
     if (argument === "--dry-run") options.dryRun = true;
     else if (argument === "--verify") options.verifyOnly = true;
+    else if (argument === "--skip-tests") options.skipTests = true;
     else if (argument === "--version") options.version = argv[++index];
     else if (argument.startsWith("--version=")) options.version = argument.slice(10);
     else if (argument === "--message") options.message = argv[++index];
@@ -106,6 +108,7 @@ function printHelp() {
 
 参数：
   --dry-run          只展示计划，不修改文件、不提交、不联网
+  --skip-tests       跳过测试，仅构建并核验发布产物
   --version X.Y.Z    指定本次版本号
   --message TEXT     指定提交说明，默认 Release vX.Y.Z
   --notes TEXT       指定 CHANGELOG 条目
@@ -417,6 +420,7 @@ async function main() {
   }
 
   console.log(`发布计划：v${headVersion} -> v${releaseVersion}`);
+  if (options.skipTests) console.log("本次跳过测试，仅构建并核验发布产物。");
   console.log(`提交说明：${options.message || `Release v${releaseVersion}`}`);
   printList("当前可发布改动", before.publishable);
   printList("保留但不发布的文件", before.ignored);
@@ -429,14 +433,14 @@ async function main() {
   if (workingVersion !== releaseVersion) writePackageVersion(releaseVersion);
   ensureChangelogEntry(releaseVersion, options.notes);
 
-  console.log("\n[1/6] 运行测试并构建");
-  run("npm", ["run", "check"], { env: { MWI_ARCHIVE_RELEASE: "1" } });
+  console.log(options.skipTests ? "\n[1/6] 构建（跳过测试）" : "\n[1/6] 运行测试并构建");
+  run("npm", ["run", options.skipTests ? "build" : "check"], { env: { MWI_ARCHIVE_RELEASE: "1" } });
   assertHistoricalBundlesUnchanged(historicalBundles);
   verifyBuild(releaseVersion);
 
   console.log("\n[2/6] 计算并显式暂存发布文件");
   const after = classifyChanges(changedPaths(), releaseVersion, trackedPaths());
-  if (!after.publishable.length) throw new Error("测试构建完成后没有可提交文件");
+  if (!after.publishable.length) throw new Error("构建完成后没有可提交文件");
   run("git", ["diff", "--check", "--", ...after.publishable]);
   printList("将提交的文件", after.publishable);
   printList("继续保留的文件", after.ignored);

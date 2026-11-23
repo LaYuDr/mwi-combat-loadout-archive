@@ -45,6 +45,7 @@
     markers.clear();
   }
   function detach() {
+    app.Cloud.setActive(null);
     loading++; clearHighlights(); mounted?.host.remove(); mounted = null; context = null; rows = []; selectedId = null;
     last = ""; undo = null; confirmation = null;
   }
@@ -53,7 +54,10 @@
     if (!fresh || fresh.scope !== context?.scope || fresh.details !== context.details) throw Error("当前角色或父配装已变化，请在对应配装下重试。");
     return fresh;
   }
-  function notify(scope) { channel?.postMessage({ scope }); }
+  function notify(ctx) {
+    channel?.postMessage({ scope: ctx.scope });
+    app.Cloud.changed(ctx.props.characterInfo.characterID, ctx.raw.id);
+  }
   async function reload() {
     const token = ++loading, scope = context?.scope;
     if (!scope) return;
@@ -61,6 +65,7 @@
       const result = await Store.list(scope);
       if (token !== loading || context?.scope !== scope) return;
       rows = result;
+      mounted.cloud.update(rows, context);
       if (!selected()) selectedId = null;
       render(); message(failure, Boolean(failure));
     } catch (error) { if (token === loading) message(error.message, true); }
@@ -79,7 +84,7 @@
     const success = await run(async () => {
       const ctx = currentContext(), title = Core.name(mounted.name.value), ui = mounted;
       const row = await Store.create(ctx, title);
-      notify(ctx.scope);
+      notify(ctx);
       if (mounted !== ui) return;
       selectedId = row.id; mounted.name.value = ""; mounted.form.hidden = true;
       await reload(); if (mounted === ui) message(`已保存“${row.name}”`);
@@ -98,7 +103,7 @@
     const success = await run(async () => {
       const ctx = currentContext(), ui = mounted;
       const row = await Store.mutate(ctx, pending.row, pending.action, mounted.rename.value);
-      notify(ctx.scope);
+      notify(ctx);
       if (mounted !== ui) return;
       if (pending.action === "remove") { undo = row; if (selectedId === row.id) selectedId = null; }
       confirmation = null; await reload();
@@ -112,7 +117,7 @@
     if (!row) return;
     const success = await run(async () => {
       const ctx = currentContext(), ui = mounted;
-      const restored = await Store.mutate(ctx, row, "restore"); notify(ctx.scope);
+      const restored = await Store.mutate(ctx, row, "restore"); notify(ctx);
       if (mounted !== ui) return;
       undo = null; selectedId = restored.id; await reload(); if (mounted === ui) message(`已恢复“${restored.name}”`);
     });
@@ -209,11 +214,16 @@
       if (input.size > 5000000) throw Error("备份超过 5 MB，未导入。");
       const ctx = currentContext(), ui = mounted, text = await input.text();
       if (currentContext().scope !== ctx.scope) throw Error("当前父配装已变化，未导入备份，请在原配装下重试。");
-      const count = await Store.importBackup(ctx, text); notify(ctx.scope);
+      const count = await Store.importBackup(ctx, text); notify(ctx);
       if (mounted !== ui) return;
       file.value = ""; setMenu(false); await reload(); message(`已导入 ${count} 项`);
     }));
-    menu.append(renameButton, remove, stop, exportButton, importButton, file);
+    const virtualButton = button("保存为虚拟配装", () => run(async () => {
+      const fresh = currentContext();
+      await app.Virtual.save(fresh.props.characterInfo.characterID, fresh.raw.name, Core.snapshot(fresh.raw));
+      if (mounted?.host === host) { setMenu(false); message("已保存到配装总览的虚拟配装。"); }
+    }));
+    menu.append(renameButton, remove, stop, virtualButton, exportButton, importButton, file);
     const confirm = el("div", null, { class: "editor", hidden: "" }), confirmText = el("p", "");
     const rename = el("input", null, { maxlength: "60", "aria-label": "修改子方案名称" });
     const confirmRow = el("div", null, { class: "actions" });
@@ -230,6 +240,17 @@
     summaryControl.append(summary);
     const list = el("ol", null, { "aria-label": "需要手动修改的项目" }); differences.append(summaryControl, list);
     section.append(header, choices, menu, form, confirm, notice, differences);
+    const cloud = app.CloudUI.mount(ctx, el, button, (main, copy, choice) => run(async () => {
+      const fresh = currentContext(), ui = mounted;
+      if (fresh.scope !== ctx.scope) throw Error("请在原配装下比较版本。");
+      await Store.resolveConflict(fresh, main, copy, choice);
+      notify(fresh);
+      if (mounted !== ui) return;
+      await reload();
+      if (mounted === ui) message("版本选择已存本机。");
+    }));
+    app.Cloud.setActive(ctx.props.characterInfo.characterID, ctx.raw.id);
+    section.append(cloud.node, button("保存为虚拟配装", () => virtualButton.click()));
     if (root.__layuUsage_mwi_loadout) {
       const settings = el("details", null);
       settings.append(el("summary", "统计"), el("slot", null, { name: "usage-settings" }));
@@ -244,9 +265,10 @@
     shadow.addEventListener("focusout", event => {
       if (!host.matches(":focus-within") && !shadow.contains(event.relatedTarget)) setMenu(false);
     });
-    mounted = { host, shadow, choices, add, menu, form, name, save, cancelNew, update, cancelUpdate, renameButton, remove, stop, undoButton,
+    mounted = { cloud, host, shadow, choices, add, menu, form, name, save, cancelNew, update, cancelUpdate, renameButton, remove, stop, undoButton,
       confirm, confirmText, rename, commit, cancel, notice, status, retry, differences, summary, list, exportButton, importButton };
     context = ctx; rows = []; selectedId = null; undo = null; confirmation = null;
+    cloud.update(rows);
     render();
     // Keep loading in the choices row so removing a temporary notice won't move native controls.
     choices.querySelector(".empty").textContent = "读取中…";
@@ -309,7 +331,9 @@
         selectedId = entry.id; confirmation = null; setMenu(false); ui.form.hidden = true;
         ui.differences.open = false; render(); message(failure, Boolean(failure));
       }, { "data-scene-id": entry.id }); bindMenu(choice, entry.id); }
-      if (choice.textContent !== entry.name) choice.textContent = entry.name;
+      const label = active.some(other => other.id !== entry.id && other.name === entry.name)
+        ? entry.name + " · " + entry.id.slice(0, 6) : entry.name;
+      if (choice.textContent !== label) choice.textContent = label;
       choice.setAttribute("aria-pressed", String(entry.id === selectedId));
       choice.disabled = busy;
       if (ui.choices.children[index] !== choice) ui.choices.insertBefore(choice, ui.choices.children[index] || ui.add);
@@ -384,6 +408,7 @@
       const fingerprint = Core.stable(ctx.raw);
       context = ctx;
       if (last !== fingerprint || recovered || highlighted.some(node => !node.isConnected) || [...markers.values()].some(marker => !marker.host.isConnected) || unresolved.some(change => Adapter.target(ctx, change))) {
+        mounted.cloud.update(rows, ctx);
         last = fingerprint; render(); if (recovered) message("");
       }
       syncPicker();
@@ -400,12 +425,20 @@
     }
   }
   function start() {
+    app.Cloud.start(scope => {
+      channel?.postMessage({ scope });
+      if (context?.scope === scope) reload();
+    }, (character, id) => {
+      if (mounted && context?.props.characterInfo.characterID === character && context.raw.id === id) {
+        mounted.cloud.update(rows, context);
+      }
+    });
     app.ActionMemory.start();
     app.Overview.start();
     const style = el("style", '[data-mwi-scene-change] { outline: 2px solid #ffd27a !important; outline-offset: 3px !important; } [data-mwi-scene-target] { outline: 3px solid #70b7ff !important; outline-offset: -3px !important; box-shadow: inset 0 0 0 5px #171822 !important; }');
     style.id = "mwi-loadout-scenes-highlight-style"; document.head.append(style);
     const panelSelector = '[class*="LoadoutsPanel_loadoutsPanel__"]';
-    const ownedSelector = '#mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
+    const ownedSelector = '.mwi-overview-cloud, #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
     const options = { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "aria-hidden", "style", "class"] };
     const observer = new MutationObserver(records => {
       const relevant = records.some(record => {

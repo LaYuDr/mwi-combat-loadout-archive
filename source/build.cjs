@@ -18,11 +18,12 @@ const header = `// ==UserScript==
 // @supportURL   https://github.com/${config.repository}/issues
 // @updateURL    ${download.replace(/\.user\.js$/, ".meta.js")}
 // @downloadURL  ${download}
-// @description  银河奶牛配装助手：总览并编辑原生配装，保存场景子方案、高亮切换差异，记住生活与战斗项目的配装选择，支持子方案备份。
+// @description  银河奶牛配装助手：总览并编辑原生配装，保存场景子方案、高亮切换差异，记住生活与战斗项目的配装选择，支持子方案备份与跨设备云同步。
 // @match        https://www.milkywayidle.com/game*
 // @match        https://milkywayidle.com/game*
 // @match        https://www.milkywayidlecn.com/game*
 // @match        https://milkywayidlecn.com/game*
+// @connect      clipboard.im
 // @run-at       document-start
 ${usageBuild.metadata}// @grant        GM_addElement
 // @grant        unsafeWindow
@@ -31,7 +32,7 @@ ${usageBuild.metadata}// @grant        GM_addElement
 // @license      MIT
 // ==/UserScript==
 `;
-const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memory.js", "overview.js", "app.js"].map(name => {
+const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memory.js", "cloud_sync.js", "cloud_ui.js", "virtual_loadouts.js", "virtual_ui.js", "overview.js", "app.js"].map(name => {
   let source = read(name);
   if (name === "overview.js") source = source.replace('"__OVERVIEW_CSS__"', () => JSON.stringify(read("overview.css")));
   if (name === "app.js") source = source.replace('"__SCENE_CSS__"', () => JSON.stringify(read("scene.css")));
@@ -39,15 +40,19 @@ const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memo
 }).join("\n");
 const runtime = "// MWI_COMBAT_LOADOUT_ARCHIVE_RUNTIME\n" + body;
 const usage = usageBuild.buildUsage(project, "source/runtime/usage-client.js", "mwi_loadout", "配装助手", version);
-const output = header + usage + runtime;
+function clipboardBinding(target) {
+  return "\n(function () {\n" + read("clipboard_transport.js") +
+    "\nif (typeof GM_xmlhttpRequest === 'function') " + target + ".__mwiLoadoutClipboardV2 = mwiLoadoutClipboard;\n})();\n";
+}
+const output = header + usage + clipboardBinding("globalThis") + runtime;
 new vm.Script(output);
 const loaderHeader = header
   .replace(usageBuild.metadata, "")
   .replace(/^\/\/ @(?:updateURL|downloadURL).*\n/gm, "")
   .replace("// @name         配装助手", "// @name         A配装助手 开发加载器")
   .replace("/loadout-archive\n", "/loadout-archive/dev\n")
-  .replace("// @grant        GM_addElement\n// @grant        unsafeWindow\n// @sandbox      raw", "// @grant        GM_xmlhttpRequest\n// @grant        GM_addElement\n// @connect      127.0.0.1");
-const loader = loaderHeader + read("dev_loader.js");
+  .replace("// @grant        GM_addElement\n// @grant        unsafeWindow\n// @sandbox      raw", "// @grant        GM_xmlhttpRequest\n// @grant        GM_addElement\n// @connect      127.0.0.1\n// @grant        unsafeWindow");
+const loader = loaderHeader + clipboardBinding("(typeof unsafeWindow === 'undefined' ? globalThis : unsafeWindow)") + read("dev_loader.js");
 const outputs = { "mwi_combat_loadout_archive.user.js": output,
   "mwi_combat_loadout_archive.meta.js": header, "runtime.js": runtime, "mwi_combat_loadout_archive.dev.user.js": loader };
 fs.mkdirSync(path.join(project, "deliverables"), { recursive: true });

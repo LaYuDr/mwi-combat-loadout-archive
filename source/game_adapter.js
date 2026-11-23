@@ -171,5 +171,37 @@
     }
     return contexts;
   }
-  app.Adapter = Object.freeze({ current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
+  function cloudContext(listLoadouts = true) {
+    let character, dict;
+    const host = document.querySelector('[class*="GamePage_gamePage"]');
+    let fiber = host && hostFiber(host);
+    for (let depth = 0; fiber && depth < 80; depth++, fiber = fiber.return) {
+      const state = fiber.stateNode?.state;
+      if (state?.characterItemMap && state.character) {
+        if (state.isLoading || state.isFullDisconnected) return null;
+        character = state.character.id;
+        dict = state.characterLoadoutDict;
+        break;
+      }
+    }
+    if (!character || listLoadouts && !dict) {
+      const panel = visibleLoadoutPanel();
+      const props = (panel ? loadoutController(panel) : actionContexts()[0]?.controller)?.props;
+      if (!character || props?.characterInfo?.characterID === character) {
+        character = props?.characterInfo?.characterID;
+        dict = props?.characterLoadoutDict;
+      }
+    }
+    if (!Number.isSafeInteger(character) || character <= 0) return null;
+    if (!listLoadouts) return { character };
+    const loadoutIds = Object.values(dict || {}).map(row => row?.id).filter(id => Number.isSafeInteger(id) && id > 0);
+    return { character, loadoutIds: dict ? loadoutIds : null, loadouts: dict };
+  }
+  function nativeSnapshot(character, id) {
+    const ctx = cloudContext();
+    if (ctx?.character !== character || ctx.loadouts?.[id]?.id !== id)
+      throw Error("当前原生配装尚未完整加载，请稍后重试。");
+    return app.Core.snapshot(ctx.loadouts[id]);
+  }
+  app.Adapter = Object.freeze({ nativeSnapshot, cloudContext, current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
 })(globalThis);

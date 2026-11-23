@@ -3,7 +3,9 @@ const test = require("node:test"), assert = require("node:assert/strict");
 const fs = require("node:fs"), vm = require("node:vm");
 const source = fs.readFileSync(require.resolve("../overview.js"), "utf8");
 
-function harness() {
+const collapseKey = owner => `mwi-layu:loadout-overview:collapsed:v1:${owner}`;
+
+function harness(storage = new Map()) {
   const requests = [], views = [], optionChanges = [];
   const createElement = (type, props, ...children) => ({ type, key: props?.key, props: { ...props, children } });
   const React = {
@@ -73,7 +75,10 @@ function harness() {
   };
   const app = { Adapter: { visibleLoadoutPanel: () => panel, loadoutController: () => controller } };
   vm.runInNewContext(source, { MWILoadoutScenes: app, webpackJsonprpg_web: chunks,
-    localStorage: { getItem: () => "compressed native cache" } });
+    localStorage: {
+      getItem: key => key === "initClientData" ? "compressed native cache" : storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value)
+    } });
   const find = (node, predicate) => {
     if (predicate(node)) return node;
     for (const entry of React.Children.toArray(node?.props?.children)) {
@@ -87,7 +92,7 @@ function harness() {
     const element = { isConnected: true, getClientRects: () => [{}] };
     card.rememberCard(element);
     const nativeSlots = React.Children.toArray(card.render().props.children)[1];
-    return { card, element, slots: new nativeSlots.type(nativeSlots.props) };
+    return { card, element, slots: typeof nativeSlots.type === "function" ? new nativeSlots.type(nativeSlots.props) : null };
   }
   app.Overview.sync();
   return { app, controller, requests, views, optionChanges, find, grid, mountCard, chunks, webpack };
@@ -151,6 +156,64 @@ test("compact settings keep the native checked state and update only the associa
   assert.deepEqual(h.requests, []);
 });
 
+test("folding unmounts settings and slot editors, and single or bulk changes survive reload per character", () => {
+  const storage = new Map();
+  const h = harness(storage);
+  const card = index => h.mountCard(h.grid().props.children.flat()[index]);
+  const fold = target => h.find(target.card.render(), node => node?.props?.["aria-controls"]);
+  const toggleAll = () => h.find(h.controller.output, node => node?.key === "mwi-overview-toggle-all");
+  const first = card(0);
+  assert.equal(fold(first).props["aria-expanded"], true);
+  fold(first).props.onClick();
+  const folded = card(0);
+  const area = h.find(folded.card.render(), node => node?.props?.id === fold(folded).props["aria-controls"]);
+  assert.equal(area.props.hidden, true);
+  assert.equal(folded.slots, null);
+  assert.equal(fold(card(1)).props["aria-expanded"], true);
+  assert.deepEqual(JSON.parse(storage.get(collapseKey(71))), [12]);
+  assert.deepEqual(Array.from(harness(storage).grid().props.children.flat(), item => item.props.overviewCollapsed), [true, false]);
+  first.slots.save("equipment");
+  first.slots.saveOption("isDefault", false);
+  assert.deepEqual(h.requests, []);
+  assert.deepEqual(h.optionChanges, []);
+
+  assert.deepEqual(toggleAll().props.children, ["全部收起"]);
+  toggleAll().props.onClick();
+  assert.equal(fold(card(1)).props["aria-expanded"], false);
+  assert.deepEqual(JSON.parse(storage.get(collapseKey(71))), [12, 13]);
+  assert.deepEqual(toggleAll().props.children, ["全部展开"]);
+  toggleAll().props.onClick();
+  assert.equal(fold(card(0)).props["aria-expanded"], true);
+  assert.equal(fold(card(1)).props["aria-expanded"], true);
+  assert.deepEqual(JSON.parse(storage.get(collapseKey(71))), []);
+  toggleAll().props.onClick();
+  h.controller.props.characterInfo.characterID = 72;
+  h.controller.forceUpdate();
+  assert.equal(fold(card(0)).props["aria-expanded"], true);
+  assert.equal(fold(card(1)).props["aria-expanded"], true);
+  h.controller.props.characterInfo.characterID = 71;
+  h.controller.forceUpdate();
+  assert.equal(fold(card(0)).props["aria-expanded"], false);
+  assert.equal(fold(card(1)).props["aria-expanded"], false);
+});
+
+test("folding preserves saved choices from another tab and remains usable when storage writes fail", () => {
+  const storage = new Map();
+  const h = harness(storage);
+  const toggle = index => h.grid().props.children.flat()[index].props.toggleCard();
+  const state = () => Array.from(h.grid().props.children.flat(), item => item.props.overviewCollapsed);
+  storage.set(collapseKey(71), JSON.stringify([13, "12", -1]));
+  toggle(0);
+  assert.deepEqual(state(), [true, true]);
+  assert.deepEqual(JSON.parse(storage.get(collapseKey(71))), [13, 12]);
+
+  storage.set = () => { throw Error("Storage blocked"); };
+  toggle(0);
+  toggle(1);
+  assert.deepEqual(state(), [false, false]);
+  assert(h.find(h.controller.output, node => node?.props?.role === "status"));
+});
+
 test("the native list can be restored and a changed game tree falls back to the native view", () => {
   const h = harness();
   const toggle = () => h.find(h.controller.output, node => node?.key === "mwi-overview-toggle");
@@ -165,4 +228,40 @@ test("the native list can be restored and a changed game tree falls back to the 
   h.controller.forceUpdate();
   assert.equal(h.grid(), undefined);
   assert.deepEqual(h.requests, []);
+});
+
+test("loadout sync labels and warning tally update without rerendering the native overview", () => {
+  const h = harness(), states = new Map(), listeners = new Map();
+  h.app.Cloud = {
+    info: (_owner, id) => states.get(id) || { label: "等待同步", warning: false },
+    subscribe(owner, id, fn) {
+      assert.equal(owner, 71);
+      if (!listeners.has(id)) listeners.set(id, new Set());
+      listeners.get(id).add(fn);
+      return () => listeners.get(id).delete(fn);
+    }
+  };
+  h.controller.forceUpdate();
+  const grid = h.grid();
+  function mount(node) {
+    const cmp = new node.type(node.props);
+    const label = { textContent: "", classList: { toggle() {} } };
+    cmp.render().props.ref(label);
+    cmp.componentDidMount();
+    return { cmp, label };
+  }
+  const labels = grid.props.children.flat().map(node => {
+    const {card} = h.mountCard(node);
+    return mount(h.find(card.render(), entry => entry?.props?.ids === String(node.props.id)));
+  });
+  const tally = mount(h.find(h.controller.output, entry => entry?.props?.tally));
+  assert.ok(tally.label.hidden);
+  states.set(12, { label: "同步已暂停", warning: true });
+  listeners.get(12).forEach(fn => fn());
+  assert.equal(tally.label.textContent, "1 套配装待处理");
+  assert.equal(labels[0].label.textContent, "云同步 · 同步已暂停");
+  assert.equal(labels[1].label.textContent, "云同步 · 等待同步");
+  assert.equal(h.grid(), grid);
+  for (const {cmp} of [...labels, tally]) cmp.componentWillUnmount();
+  assert.equal(listeners.get(12).size, 0);
 });

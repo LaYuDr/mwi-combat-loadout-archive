@@ -308,7 +308,39 @@
     }
     return contexts;
   }
-  app.Adapter = Object.freeze({ current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
+  function cloudContext(listLoadouts = true) {
+    let character, dict;
+    const host = document.querySelector('[class*="GamePage_gamePage"]');
+    let fiber = host && hostFiber(host);
+    for (let depth = 0; fiber && depth < 80; depth++, fiber = fiber.return) {
+      const state = fiber.stateNode?.state;
+      if (state?.characterItemMap && state.character) {
+        if (state.isLoading || state.isFullDisconnected) return null;
+        character = state.character.id;
+        dict = state.characterLoadoutDict;
+        break;
+      }
+    }
+    if (!character || listLoadouts && !dict) {
+      const panel = visibleLoadoutPanel();
+      const props = (panel ? loadoutController(panel) : actionContexts()[0]?.controller)?.props;
+      if (!character || props?.characterInfo?.characterID === character) {
+        character = props?.characterInfo?.characterID;
+        dict = props?.characterLoadoutDict;
+      }
+    }
+    if (!Number.isSafeInteger(character) || character <= 0) return null;
+    if (!listLoadouts) return { character };
+    const loadoutIds = Object.values(dict || {}).map(row => row?.id).filter(id => Number.isSafeInteger(id) && id > 0);
+    return { character, loadoutIds: dict ? loadoutIds : null, loadouts: dict };
+  }
+  function nativeSnapshot(character, id) {
+    const ctx = cloudContext();
+    if (ctx?.character !== character || ctx.loadouts?.[id]?.id !== id)
+      throw Error("当前原生配装尚未完整加载，请稍后重试。");
+    return app.Core.snapshot(ctx.loadouts[id]);
+  }
+  app.Adapter = Object.freeze({ nativeSnapshot, cloudContext, current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
 })(globalThis);
 
 // ---- scene_store.js ----
@@ -363,14 +395,43 @@
       unique(rows, row.name); store.add(row); return row;
     });
   }
+  function revise(before) {
+    return { ...before, updatedAt: Math.max(Date.now(), before.updatedAt + 1), revision: crypto.randomUUID(),
+      ancestors: [...new Set([...(before.ancestors || []), before.revision])] };
+  }
+  function resolveConflict(ctx, main, copy, choice) {
+    return transaction(ctx.scope, "readwrite", (rows, store) => {
+      const pair = app.Cloud.conflictPairs(rows).find(([a, b]) => a.id === main.id && b.id === copy.id);
+      if (!pair || pair[0].revision !== main.revision || pair[1].revision !== copy.revision)
+        throw Error("这两个版本已有变化，请重新读取后再比较。");
+      const [a, b] = pair;
+      const retired = revise(b);
+      delete retired.conflictOf;
+      const originalName = b.name.replace(/（冲突副本）$/, "") || "子方案";
+      if (choice === "both") {
+        let index = 2;
+        do { retired.name = originalName.slice(0, 48) + "（版本 " + index++ + "）"; }
+        while (rows.some(row => row.id !== b.id && !row.removedAt && row.name === retired.name));
+      } else if (choice === "a" || choice === "b") {
+        const updated = revise(a);
+        if (choice === "b") {
+          Object.assign(updated, { name: originalName, snapshot: b.snapshot, removedAt: b.removedAt });
+          if (updated.removedAt == null) unique(rows.filter(row => row.id !== b.id), updated.name, a.id);
+        }
+        store.put(updated);
+        retired.removedAt = retired.updatedAt;
+      } else throw Error("请选择要保留的版本。");
+      store.put(retired);
+    });
+  }
   async function mutate(ctx, expected, action, value) {
     return transaction(ctx.scope, "readwrite", (rows, store) => {
       const before = rows.find(row => row.id === expected.id);
       if (!before || before.revision !== expected.revision) throw Error("这个子方案已在其他标签页更新，请重新读取后再操作。");
-      const row = { ...before, updatedAt: Date.now(), revision: crypto.randomUUID() };
+      const row = revise(before);
       if (action === "rename") { row.name = Core().name(value); unique(rows, row.name, row.id); }
       else if (action === "snapshot") row.snapshot = Core().snapshot(ctx.raw);
-      else if (action === "remove") row.removedAt = Date.now();
+      else if (action === "remove") { row.removedAt = Date.now(); delete row.conflictOf; }
       else if (action === "restore") { unique(rows, row.name, row.id); row.removedAt = null; }
       else throw Error("无法识别的子方案操作。");
       store.put(row); return row;
@@ -402,7 +463,30 @@
       return added.length;
     });
   }
-  app.Store = Object.freeze({ list: scope => transaction(scope, "readonly", rows => rows), create, mutate, importBackup,
+  async function mergeCloud(owner, loadoutId, remote, merge) {
+    const scope = owner + "|" + loadoutId;
+    if (!remote.length) {
+      return transaction(scope, "readonly", local => ({ scenes: merge(local, remote), changed: [] }));
+    }
+    return transaction(scope, "readwrite", (local, store) => {
+      const previous = new Map(local.map(row => [row.id, row]));
+      const scenes = merge(local, remote);
+      const changed = new Set();
+      for (const scene of scenes) {
+        if (scene.parentId !== loadoutId) throw Error("子方案不属于当前配装。");
+        const before = previous.get(scene.id);
+        if (before && before.scope !== scope) throw Error("方案编号与本机父配装冲突。");
+        if (before && before.revision === scene.revision && before.conflictOf === scene.conflictOf &&
+            Core().stable(before.ancestors || []) === Core().stable(scene.ancestors || [])) continue;
+        const row = { ...scene, owner, scope };
+        if (before) store.put(row);
+        else store.add(row); // Never replace an ID belonging to another character.
+        changed.add(scope);
+      }
+      return { scenes, changed: [...changed] };
+    });
+  }
+  app.Store = Object.freeze({ resolveConflict, mergeCloud, list: scope => transaction(scope, "readonly", rows => rows), create, mutate, importBackup,
     exportBackup: (ctx, rows) => JSON.stringify({ format: "mwi-layu-loadout-scenes", schemaVersion: 1, scope: ctx.scope,
       scenes: rows.filter(row => !row.removedAt).map(({ name, snapshot }) => ({ name, snapshot })) }, null, 2) });
 })(globalThis);
@@ -414,6 +498,12 @@
   const prefix = "mwi-layu:action-loadouts:v1:";
   const field = "selectedCharacterLoadoutId";
   const sessions = new Map();
+  // Only keep keys for one character. Values are read at export time so a
+  // queued storage event cannot publish an obsolete selection for a known key.
+  let cloudIndex = null;
+  root.addEventListener?.("storage", event => {
+    if (event.key === null || event.key.startsWith(prefix)) cloudIndex = null;
+  });
   const id = value => Number.isSafeInteger(value) && value >= 0;
   function scope(props, state) {
     const action = props?.actionDetail, character = props?.characterInfo?.characterID;
@@ -449,7 +539,14 @@
   }
   function remember(session, key, value) {
     try {
-      localStorage.setItem(key, JSON.stringify({ version: 1, loadoutId: value }));
+      let previous;
+      try { previous = read(key); } catch (_) { /* An explicit choice repairs a malformed local preference. */ }
+      const updatedAt = Math.max(Date.now(), (previous?.updatedAt || 0) + 1);
+      localStorage.setItem(key, JSON.stringify({ version: 1, loadoutId: value, updatedAt }));
+      cloudIndex = null;
+      const character = session.controller.props.characterInfo.characterID;
+      app.Cloud?.changed(character, value);
+      if (previous && previous.loadoutId !== value) app.Cloud?.changed(character, previous.loadoutId);
       clearNotice(session);
     } catch (_) { notice(session, "没能记住这次配装。当前选择仍可使用，请检查浏览器存储权限或空间后重新选择。"); }
   }
@@ -560,15 +657,759 @@
     document.addEventListener("visibilitychange", tick);
     tick(); setInterval(tick, 650);
   }
-  app.ActionMemory = Object.freeze({ start, tick });
+  function keysByLoadout(character) {
+    const now = Date.now();
+    if (cloudIndex?.character === character && now < cloudIndex.expires) return cloudIndex.groups;
+    const groups = new Map();
+    const base = prefix + JSON.stringify([location.origin, character]).slice(0, -1) + ",";
+    for (let i = 0, count = localStorage.length; i < count; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(base)) continue;
+      let row;
+      try { row = JSON.parse(localStorage.getItem(key)); } catch (error) {
+        if (error instanceof SyntaxError) continue;
+        throw error;
+      }
+      if (row?.version !== 1 || !id(row.loadoutId)) continue;
+      if (!groups.has(row.loadoutId)) groups.set(row.loadoutId, new Set());
+      groups.get(row.loadoutId).add(key);
+    }
+    if (root.addEventListener) cloudIndex = { character, groups, expires: now + 30000 };
+    return groups;
+  }
+  function mergeCloud(character, loadoutId, incoming) {
+    for (const row of incoming) {
+      const key = prefix + JSON.stringify([location.origin, character, row.type, row.action]);
+      const before = read(key);
+      const updatedAt = before?.updatedAt ?? 0;
+      if (before && (updatedAt > row.updatedAt ||
+          updatedAt === row.updatedAt && before.loadoutId >= row.loadoutId)) continue;
+      localStorage.setItem(key, JSON.stringify({ version: 1, loadoutId: row.loadoutId, updatedAt: row.updatedAt }));
+      if (cloudIndex?.character === character) {
+        const groups = cloudIndex.groups;
+        if (before) groups.get(before.loadoutId)?.delete(key);
+        if (!groups.has(loadoutId)) groups.set(loadoutId, new Set());
+        groups.get(loadoutId).add(key);
+      }
+      for (const session of sessions.values()) {
+        if (session.key === key) { session.revision++; session.key = null; restore(session); }
+      }
+    }
+    const keys = keysByLoadout(character).get(loadoutId);
+    if (!keys) return [];
+    const memories = [];
+    for (const key of [...keys].sort()) {
+      const row = read(key);
+      if (row?.loadoutId !== loadoutId) continue;
+      const [, , type, action] = JSON.parse(key.slice(prefix.length));
+      memories.push({ type, action, loadoutId, updatedAt: row.updatedAt ?? 0 });
+    }
+    return memories;
+  }
+  app.ActionMemory = Object.freeze({ start, tick, mergeCloud });
+})(globalThis);
+
+// ---- cloud_sync.js ----
+(function (root) {
+  "use strict";
+  const app = root.MWILoadoutScenes;
+  const format = "mwi-layu-loadouts-cloud";
+  const uuid = value => typeof value === "string" && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(value);
+  const time = value => Number.isSafeInteger(value) && value >= 0;
+  const order = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  function scene(row) {
+    if (!row || !uuid(row.id) || !uuid(row.revision) || !time(row.createdAt) || !time(row.updatedAt) ||
+        !(row.removedAt === null || time(row.removedAt)) || typeof row.name !== "string" ||
+        !(row.ancestors === undefined || Array.isArray(row.ancestors) && row.ancestors.every(uuid))) throw Error("云端子方案格式无效。");
+    const snapshot = app.Core.validateSnapshot(row.snapshot);
+    if (snapshot.raw.id !== row.parentId) throw Error("云端子方案父配装不匹配。");
+    return { id: row.id, parentId: row.parentId, name: app.Core.name(row.name), revision: row.revision,
+      ...(uuid(row.conflictOf) && row.conflictOf !== row.id ? { conflictOf: row.conflictOf } : {}),
+      createdAt: row.createdAt, updatedAt: row.updatedAt, removedAt: row.removedAt, snapshot,
+      ancestors: [...new Set(row.ancestors || [])].sort() };
+  }
+  function memory(row) {
+    if (!/^\/action_types\/[a-z0-9_]+$/.test(row?.type) || !/^\/actions\/(?:[a-z0-9_]+\/)*[a-z0-9_]+$/.test(row?.action) ||
+        !time(row.loadoutId) || !time(row.updatedAt)) throw Error("行动配装记录无效。");
+    return { type: row.type, action: row.action, loadoutId: row.loadoutId, updatedAt: row.updatedAt };
+  }
+  const boardName = (character, loadoutId) => character + "loadout" + loadoutId;
+  const occupied = message => Object.assign(Error(message), { code: "BOARD_OCCUPIED" });
+  function parse(character, loadoutId, text) {
+    if (text === "") return { scenes: [], memories: [], native: null };
+    let doc;
+    try { if (text.length <= 5000000) doc = JSON.parse(text); } catch (_) { /* Show a recoverable board conflict. */ }
+    if (doc?.format !== format || ![2, 3].includes(doc.version) || doc.character !== character || doc.loadoutId !== loadoutId ||
+        !Array.isArray(doc.scenes) || !Array.isArray(doc.memories)) throw occupied("剪贴板已有其他内容或版本不兼容，已保留原文。");
+    const scenes = doc.scenes.map(scene);
+    if (new Set(scenes.map(row => row.id)).size !== scenes.length) throw Error("云端方案编号重复。");
+    const memories = doc.memories.map(memory);
+    if (scenes.some(row => row.parentId !== loadoutId) || memories.some(row => row.loadoutId !== loadoutId)) {
+      throw occupied("剪贴板含其他配装的数据，已保留原文。");
+    }
+    let native = null;
+    if (doc.native != null) {
+      if (doc.version !== 3 || !time(doc.native.updatedAt)) throw occupied("云端原生配装格式无效，已保留原文。");
+      const snapshot = app.Core.validateSnapshot(doc.native.snapshot);
+      if (!loadoutId || snapshot.raw.id !== loadoutId) throw occupied("云端原生配装编号不匹配，已保留原文。");
+      native = { snapshot, updatedAt: doc.native.updatedAt };
+    }
+    return { scenes, memories, native };
+  }
+  function mergeScenes(local, incoming) {
+    const rows = new Map(local.map(row => [row.id, scene(row)]));
+    const copies = [];
+    for (const remote of incoming) {
+      const old = rows.get(remote.id);
+      if (!old) { rows.set(remote.id, remote); continue; }
+      if (old.parentId !== remote.parentId) throw Error("云端方案编号与父配装冲突。");
+      if (old.revision === remote.revision) {
+        if (app.Core.stable({ ...old, ancestors: [], conflictOf: null }) !== app.Core.stable({ ...remote, ancestors: [], conflictOf: null })) throw Error("云端同一版本的内容不一致。");
+        if (old.conflictOf && remote.conflictOf && old.conflictOf !== remote.conflictOf) throw Error("冲突副本的来源不一致。");
+        rows.set(old.id, { ...remote, ...old, ancestors: [...new Set([...old.ancestors, ...remote.ancestors])].sort() });
+        continue;
+      }
+      if (old.ancestors.includes(remote.revision)) continue;
+      if (remote.ancestors.includes(old.revision)) { rows.set(old.id, remote); continue; }
+      const localWins = old.updatedAt > remote.updatedAt || old.updatedAt === remote.updatedAt && old.revision > remote.revision;
+      const [winner, other] = localWins ? [old, remote] : [remote, old];
+      rows.set(winner.id, { ...winner, ancestors: [...new Set([...winner.ancestors, ...other.ancestors, other.revision])].sort() });
+      if (other.removedAt == null || winner.removedAt == null) copies.push({ ...other, conflictOf: winner.id, id: other.revision, name: other.name.slice(0, 50) + "（冲突副本）" });
+    }
+    for (const copy of copies) if (!rows.has(copy.id)) rows.set(copy.id, copy);
+    return [...rows.values()].sort((a, b) => order(a.id, b.id));
+  }
+  function conflictPairs(rows) {
+    const byId = new Map(rows.map(row => [row.id, row]));
+    const pairs = [];
+    // Older boards identified a copy by its revision-derived ID and suffix.
+    const legacy = new Map(rows.filter(row => !row.conflictOf && row.removedAt == null &&
+      row.name.endsWith("（冲突副本）")).map(row => [row.id, row]));
+    for (const row of rows) {
+      if (row.conflictOf) {
+        const main = byId.get(row.conflictOf);
+        if (main && main.parentId === row.parentId && main.ancestors?.includes(row.id)) pairs.push([main, row]);
+      }
+      if (!legacy.size) continue;
+      for (const revision of row.ancestors || []) {
+        const copy = legacy.get(revision);
+        if (copy && copy !== row && copy.parentId === row.parentId) {
+          pairs.push([row, copy]); legacy.delete(revision);
+        }
+      }
+    }
+    return pairs;
+  }
+  async function synchronize(character, loadoutId, io, current, refresh) {
+    const check = () => { if (current() !== character) throw Error("角色已切换。"); };
+    const name = boardName(character, loadoutId);
+    const owner = location.origin + "|" + character;
+    check();
+    const before = await io(name);
+    check();
+    const remote = parse(character, loadoutId, before);
+    const b = board(character, loadoutId);
+    const localNative = loadoutId && app.Adapter?.nativeSnapshot ? app.Adapter.nativeSnapshot(character, loadoutId) : null;
+    const localKey = localNative ? app.Core.stable(localNative) : null;
+    const remoteKey = remote.native ? app.Core.stable(remote.native.snapshot) : null;
+    // Do not let an unchanged/stale game tab replace another device's published configuration.
+    // A fresh client with differing data requires an explicit choice in the cloud panel.
+    const canPublish = localNative && (!remote.native || localKey === remoteKey || b.forceNative === localKey ||
+      b.localBaseline != null && localKey !== b.localBaseline && remoteKey === b.remoteBaseline);
+    const native = canPublish && localKey !== remoteKey ? { snapshot: localNative, updatedAt: Date.now() } : remote.native;
+    const { scenes, changed } = loadoutId === 0 ? { scenes: [], changed: [] } : await app.Store.mergeCloud(owner, loadoutId, remote.scenes, mergeScenes);
+    for (const scope of changed) refresh(scope);
+    check();
+    const memories = app.ActionMemory.mergeCloud(character, loadoutId, remote.memories).map(memory);
+    const counts = { nativeAvailable: Boolean(native), nativeMismatch: Boolean(native && localNative && app.Core.stable(native.snapshot) !== localKey),
+      sceneCount: scenes.filter(row => row.removedAt == null).length,
+      memoryCount: memories.length, conflicts: conflictPairs(scenes).length };
+    const complete = () => {
+      b.localBaseline = localKey; b.remoteBaseline = native ? app.Core.stable(native.snapshot) : null;
+      b.nativeSnapshot = native?.snapshot || null;
+      if (b.forceNative === localKey) b.forceNative = null;
+      return counts;
+    };
+    if (!before && !native && !scenes.length && !memories.length) return complete();
+    const text = JSON.stringify({ format, version: native || JSON.parse(before || "null")?.version === 3 ? 3 : 2,
+      character, loadoutId, scenes, memories, ...(native ? { native } : {}) });
+    if (text.length > 5000000) throw Error("配装数据超出同步大小限制。");
+    if (text === before) return complete();
+    if (await io(name) !== before) throw Error("另一台设备刚刚更新，稍后会重新合并。");
+    check();
+    if (localNative && app.Core.stable(app.Adapter.nativeSnapshot(character, loadoutId)) !== localKey)
+      throw Error("原生配装刚刚变化，稍后会重新读取并同步。");
+    await io(name, text);
+    if (await io(name) !== text) throw Error("写入后未能核对云端内容，稍后重试。");
+    return complete();
+  }
+
+  const activeInterval = 30000, otherInterval = 300000;
+  const boards = new Map(), urgent = new Set(), routine = new Set();
+  let timer, running = null, active = null, refreshScope, onStatus;
+  const watchers = new Map();
+  function subscribe(character, id, listener) {
+    const key = boardName(character, id);
+    if (!watchers.has(key)) watchers.set(key, new Set());
+    const group = watchers.get(key);
+    group.add(listener);
+    return () => { group.delete(listener); if (!group.size) watchers.delete(key); };
+  }
+  function emit(b) {
+    onStatus?.(b.character, b.loadoutId, b.status);
+    watchers.get(boardName(b.character, b.loadoutId))?.forEach(listener => listener());
+  }
+  const online = () => root.navigator?.onLine !== false;
+  function board(character, loadoutId) {
+    const name = boardName(character, loadoutId);
+    if (!boards.has(name)) boards.set(name, { character, loadoutId, kind: "waiting", status: "等待同步", checked: null, sceneCount: null, memoryCount: null, conflicts: 0, last: null, retryAt: 0, failures: 0, dirty: false });
+    return boards.get(name);
+  }
+  function report(b, text, kind) {
+    if (b.status === text && b.kind === kind) return;
+    b.status = text; b.kind = kind;
+    emit(b);
+  }
+  function kick() {
+    if (!timer && !running && online()) timer = setTimeout(drain, 250);
+  }
+  function enqueue(b, priority) {
+    if (priority) { routine.delete(b); urgent.add(b); }
+    else if (running !== b && !urgent.has(b)) routine.add(b);
+    kick();
+  }
+  function changed(character, loadoutId) {
+    if (!Number.isSafeInteger(character) || character <= 0 || !time(loadoutId)) return;
+    const b = board(character, loadoutId);
+    b.dirty = true;
+    if (b.kind === "blocked" || b.kind === "setup") return;
+    report(b, online() ? "已存本机，待上传" : "已存本机，等待联网", "pending");
+    enqueue(b, true);
+  }
+  function request(character, loadoutId) {
+    const b = board(character, loadoutId);
+    if (running !== b && online()) enqueue(b, true);
+  }
+  function publishCurrent(character, loadoutId) {
+    const b = board(character, loadoutId);
+    b.forceNative = app.Core.stable(app.Adapter.nativeSnapshot(character, loadoutId));
+    changed(character, loadoutId);
+  }
+  function setActive(character, loadoutId) {
+    active = character == null ? null : board(character, loadoutId);
+    if (active && active.kind !== "blocked" && active.kind !== "setup" && !active.retryAt && (active.last === null || Date.now() - active.last >= activeInterval)) {
+      request(character, loadoutId);
+    }
+  }
+  async function drain() {
+    timer = null;
+    while (online()) {
+      const b = urgent.values().next().value || (!document.hidden && routine.values().next().value);
+      if (!b) break;
+      running = b;
+      urgent.delete(b); routine.delete(b);
+      const wasDirty = b.dirty;
+      try {
+        const current = () => app.Adapter.cloudContext(false)?.character;
+        if (current() !== b.character) continue;
+        b.last = Date.now();
+        b.dirty = false;
+        report(b, wasDirty ? "正在同步本机修改…" : "正在核对…", "busy");
+        const io = root.__mwiLoadoutClipboardV2;
+        if (typeof io !== "function" || app.Adapter.nativeSnapshot && io.protocolVersion !== 3)
+          throw Object.assign(Error("云同步接口需要更新，请更新已安装的配装助手或开发加载器，再刷新游戏页面。"), { code: "BRIDGE_MISSING" });
+        const counts = await synchronize(b.character, b.loadoutId, io, current, refreshScope);
+        b.failures = 0; b.retryAt = 0;
+        Object.assign(b, counts, { checked: Date.now() });
+        if (!b.dirty) report(b, counts.nativeMismatch ? "原生配装与云端不同" : counts.nativeAvailable ? "配装已同步" :
+          counts.sceneCount || counts.memoryCount ? "附加记录已同步 · 尚无配装快照" : "已核对 · 无附加记录", "ok");
+      } catch (error) {
+        b.retryAt = Date.now() + Math.min(otherInterval, activeInterval * 2 ** Math.min(b.failures++, 4));
+        const setup = error.code === "BRIDGE_MISSING";
+        const blocked = setup || error.code === "BOARD_OCCUPIED";
+        const editedDuringSync = b.dirty;
+        b.dirty ||= wasDirty;
+        if (blocked) { urgent.delete(b); routine.delete(b); }
+        if (blocked || !editedDuringSync) report(b, error.message, setup ? "setup" : blocked ? "blocked" : "error");
+      } finally { running = null; }
+    }
+  }
+  function start(refresh, statusChanged) {
+    refreshScope = refresh; onStatus = statusChanged;
+    let poll;
+    function scan() {
+      clearTimeout(poll);
+      if (document.hidden || !online()) return;
+      let delay = activeInterval;
+      try {
+        const ctx = app.Adapter.cloudContext();
+        if (!ctx?.loadoutIds) delay = 3000;
+        else {
+          const now = Date.now();
+          for (const id of [...ctx.loadoutIds, 0]) {
+            const b = board(ctx.character, id);
+            if (b.kind === "blocked" || b.kind === "setup") continue;
+            if (id && ctx.loadouts?.[id]) {
+              const key = app.Core.stable(ctx.loadouts[id]);
+              const edited = b.observedNative != null && key !== b.observedNative;
+              b.observedNative = key;
+              if (edited) changed(ctx.character, id);
+            }
+            const due = b.retryAt || (b.last === null ? now : b.last + (active === b ? activeInterval : otherInterval));
+            if (now >= due) enqueue(b, (active === b || b.dirty) && running !== b);
+            else delay = Math.min(delay, Math.max(500, due - now));
+          }
+        }
+      } catch (_) { delay = 3000; }
+      finally { poll = setTimeout(scan, delay); }
+    }
+    function resume() {
+      if (urgent.size || !document.hidden && routine.size) kick();
+      scan();
+    }
+    document.addEventListener("visibilitychange", resume);
+    const connectivityChanged = () => {
+      for (const b of boards.values()) emit(b);
+    };
+    root.addEventListener("offline", connectivityChanged);
+    root.addEventListener("online", () => {
+      connectivityChanged();
+      for (const b of boards.values()) if (b.retryAt && b.kind !== "blocked" && b.kind !== "setup") {
+        b.retryAt = 0; b.last = null;
+        if (b.dirty) enqueue(b, true);
+      }
+      resume();
+    });
+    scan();
+  }
+  function info(character, id) {
+    const b = board(character, id);
+    let label = b.status;
+    if (b.kind === "setup") label = "需要更新加载器";
+    else if (b.kind === "blocked") label = "同步已暂停";
+    else if (!online()) label = b.dirty ? "已存本机，等待联网" : "离线";
+    else if (b.kind === "error") label = b.dirty ? "已存本机，待重试" : "同步待重试";
+    else if (b.conflicts && b.kind === "ok") label = "有版本待比较";
+    return { label, kind: b.kind, detail: b.status, checked: b.checked, sceneCount: b.sceneCount,
+      nativeAvailable: b.nativeAvailable, nativeMismatch: b.nativeMismatch, nativeSnapshot: b.nativeSnapshot,
+      memoryCount: b.memoryCount, conflicts: b.conflicts, offline: !online(),
+      warning: Boolean(b.nativeMismatch || b.conflicts || b.kind === "setup" || b.kind === "blocked" || b.kind === "error" || (!online() && b.dirty)) };
+  }
+  app.Cloud = Object.freeze({ subscribe, info, conflictPairs, changed, request, publishCurrent, setActive, start, synchronize, boardName, parse, mergeScenes,
+    status: (character, loadoutId) => boards.get(boardName(character, loadoutId))?.status || "等待同步" });
+})(globalThis);
+
+// ---- cloud_ui.js ----
+(function (root) {
+  "use strict";
+  const app = root.MWILoadoutScenes;
+  function mount(ctx, el, button, resolve) {
+    const character = ctx.props.characterInfo.characterID, id = ctx.raw.id;
+    const board = app.Cloud.boardName(character, id), url = "https://clipboard.im/" + board;
+    const node = el("details", null, { class: "cloud-panel" });
+    const summary = el("summary", ""), note = el("p", "", { class: "cloud-note" });
+    const facts = el("dl", null, { class: "cloud-facts" });
+    function fact(label) {
+      const value = el("dd", "");
+      facts.append(el("dt", label), value);
+      return value;
+    }
+    const nativeStatus = fact("原生配装内容"), sceneStatus = fact("场景子方案"), memoryStatus = fact("行动选择记录");
+    const checked = fact("上次核对"), address = fact("剪贴板 ID");
+    const link = el("a", board, { href: url, target: "_blank", rel: "noopener noreferrer", title: "打开这套配装的剪贴板" });
+    address.append(link);
+    const sync = button("立即同步", () => app.Cloud.request(character, id));
+    const feedback = el("p", "", { role: "status", class: "cloud-feedback" });
+    const copy = button("复制地址", async () => {
+      try { await navigator.clipboard.writeText(url); feedback.textContent = "已复制剪贴板地址"; }
+      catch (_) { feedback.textContent = "请长按或右键剪贴板 ID，复制链接地址。"; }
+    });
+    const controls = el("div", null, { class: "cloud-actions" });
+    controls.append(sync, copy);
+    const versions = el("div", null, { class: "cloud-versions" });
+    const nativeConflict = el("details", null, { class: "cloud-compare", hidden: "" });
+    const nativeDiff = el("ul", null, { class: "cloud-diff" });
+    const nativeConfirm = el("div", null, { hidden: "" });
+    nativeConfirm.append(el("p", "确认用当前游戏配装更新云端分享？订阅者之后会收到这份配置。"),
+      button("确认更新分享", () => {
+        try { app.Cloud.publishCurrent(character, id); nativeConfirm.hidden = true; }
+        catch (error) { feedback.textContent = error.message; }
+      }), button("取消", () => { nativeConfirm.hidden = true; }));
+    nativeConflict.append(el("summary", "比较当前与云端配装"), nativeDiff,
+      button("用当前配装更新分享", () => { nativeConfirm.hidden = false; }),
+      button("将云端配置保存为子方案", async () => {
+        try {
+          const snapshot = app.Cloud.info(character, id).nativeSnapshot;
+          if (!snapshot) throw Error("暂无云端配装内容，请先核对。");
+          await app.Virtual.adopt(character, { snapshot }, ctx.raw, "云端 · " + snapshot.raw.name.slice(0, 50));
+          feedback.textContent = "已保存云端配置为独立子方案。";
+        } catch (error) { feedback.textContent = error.message; }
+      }), nativeConfirm);
+    node.append(summary, note, facts, controls, feedback,
+      el("p", "分享此地址可让其他玩家订阅当前原生配装及子方案。知道地址的人可以读写这套配装的同步数据。", { class: "cloud-privacy" }), nativeConflict, versions);
+
+    function comparison(main, copyRow) {
+      const view = el("details", null, { class: "cloud-compare" });
+      const toggle = el("summary", "比较版本 · " + main.name);
+      view.append(toggle);
+      view.addEventListener("toggle", () => {
+        if (!view.open || view.childElementCount > 1) return;
+        const names = el("dl", null, { class: "cloud-facts" });
+        for (const [label, row] of [["版本 A", main], ["版本 B", copyRow]]) {
+          names.append(el("dt", label), el("dd", row.name + (row.removedAt != null ? " · 已移除" : "") +
+            " · " + new Date(row.updatedAt).toLocaleString()));
+        }
+        view.append(names);
+        const list = el("ul", null, { class: "cloud-diff", "aria-label": "版本 A 到版本 B 的差异" });
+        try {
+          for (const diff of app.Core.diff(main.snapshot.raw, copyRow.snapshot)) {
+            const li = el("li", null);
+            li.append(el("strong", diff.label), el("div", "A · " + app.Adapter.describe(ctx, diff, diff.from)),
+              el("div", "B · " + app.Adapter.describe(ctx, diff, diff.to)));
+            list.append(li);
+          }
+          view.append(list.childElementCount ? list : el("p", "两个版本的配装项目一致。"));
+        } catch (error) { view.append(el("p", error.message)); }
+        const choices = el("div", null, { class: "cloud-actions" });
+        const confirmation = el("div", null, { class: "cloud-confirm", hidden: "" });
+        const prompt = el("p", ""), actions = el("div", null, { class: "cloud-actions" });
+        let choice, trigger;
+        const commit = button("确认", () => resolve(main, copyRow, choice), { class: "primary" });
+        const cancel = button("取消", () => { confirmation.hidden = true; choices.hidden = false; trigger.focus(); });
+        confirmation.addEventListener("keydown", event => {
+          if (event.key === "Escape") { event.stopPropagation(); cancel.click(); }
+        });
+        actions.append(commit, cancel); confirmation.append(prompt, actions);
+        for (const [key, label] of [["both", "保留两份"], ["a", "仅保留 A"], ["b", "仅保留 B"]]) {
+          const btn = button(label, () => {
+            if (key === "both") { resolve(main, copyRow, key); return; }
+            choice = key; trigger = btn; choices.hidden = true; confirmation.hidden = false;
+            prompt.textContent = "确认" + label + "？另一版本将从子方案列表移除，结果会同步到其他设备。";
+            cancel.focus();
+          });
+          choices.append(btn);
+        }
+        view.append(choices, confirmation);
+      });
+      return view;
+    }
+    let lastRows, pairs = [], signature = "", nativeSignature = "";
+    nativeConflict.addEventListener("toggle", () => { if (lastRows) update(lastRows); });
+    function update(rows, freshContext) {
+      if (freshContext?.scope === ctx.scope) ctx = freshContext;
+      const state = app.Cloud.info(character, id);
+      if (rows !== lastRows) { pairs = app.Cloud.conflictPairs(rows); lastRows = rows; }
+      let label = state.label;
+      if (pairs.length) {
+        const pending = pairs.length + " 组版本待比较";
+        label = state.kind === "ok" && !state.offline ? pending : state.label + " · " + pending;
+      }
+      const heading = "云同步 · " + label;
+      if (summary.textContent !== heading) summary.textContent = heading;
+      summary.classList.toggle("cloud-warning", state.warning || Boolean(pairs.length));
+      note.textContent = state.kind === "setup" || state.kind === "blocked" || state.kind === "error" ? state.detail :
+        state.offline ? "可以继续保存子方案，联网后会自动核对。" :
+        state.nativeMismatch ? "当前游戏配置与云端分享不同，已保留云端内容。请比较后选择；不会自动更换游戏装备。" :
+        pairs.length ? pairs.length + " 组修改需要比较。两个版本都已保留。" : "";
+      note.hidden = !note.textContent;
+      checked.textContent = state.checked == null ? "尚未核对" : new Date(state.checked).toLocaleString();
+      nativeStatus.textContent = state.checked == null ? "待核对" : state.nativeMismatch ? "与当前游戏配置不同，待确认" :
+        state.nativeAvailable ? "已上传装备、技能、消耗品及配置选项" : "尚无配装快照";
+      sceneStatus.textContent = state.sceneCount == null ? "待核对" : state.sceneCount + " 个 · 已核对";
+      memoryStatus.textContent = state.memoryCount == null ? "待核对" : state.memoryCount + " 条 · 已核对";
+      nativeConflict.hidden = !state.nativeMismatch;
+      if (state.nativeMismatch && nativeConflict.open) {
+        const key = app.Core.stable([ctx.raw, state.nativeSnapshot]);
+        if (key !== nativeSignature) {
+          nativeSignature = key;
+          try {
+            const differences = app.Core.diff(ctx.raw, state.nativeSnapshot);
+            nativeDiff.replaceChildren(...differences.map(diff => el("li", diff.label + "：当前 " +
+              app.Adapter.describe(ctx, diff, diff.from) + " → 云端 " + app.Adapter.describe(ctx, diff, diff.to))));
+            if (!differences.length) nativeDiff.append(el("li", "装备项目一致，名称或其他原生配置字段不同。"));
+          } catch (error) { nativeDiff.replaceChildren(el("li", error.message)); }
+        }
+      }
+      sync.disabled = state.offline || state.kind === "busy";
+      sync.textContent = state.kind === "setup" || state.kind === "blocked" || state.kind === "error" ? "重新检查" : "立即同步";
+      const key = pairs.map(([a, b]) => [a.id, a.revision, b.id, b.revision].join("/")).join("|");
+      if (key !== signature) {
+        const restoreFocus = versions.contains(node.getRootNode().activeElement);
+        versions.replaceChildren(...pairs.map(([a, b]) => comparison(a, b)));
+        signature = key;
+        if (restoreFocus) summary.focus();
+      }
+    }
+    return { node, update };
+  }
+  app.CloudUI = Object.freeze({ mount });
+})(globalThis);
+
+// ---- virtual_loadouts.js ----
+(function (root) {
+  "use strict";
+  const app = root.MWILoadoutScenes;
+  let opening;
+  const pending = new Map();
+  function source(value) {
+    let name = String(value || "").trim();
+    if (name.startsWith("https://")) {
+      const url = new URL(name);
+      if (url.origin !== "https://clipboard.im" || url.search || url.hash || url.username || url.password)
+        throw Error("请使用配装助手复制的 clipboard.im 分享地址。");
+      name = url.pathname.replace(/^\//, "").replace(/\/$/, "");
+    }
+    const match = /^([1-9]\d*)loadout([1-9]\d*)$/.exec(name);
+    if (!match || !match.slice(1).every(v => Number.isSafeInteger(Number(v))))
+      throw Error("请粘贴配装助手的剪贴板地址或 ID，来源需要包含原生配装快照或子方案。");
+    return { board: name, character: Number(match[1]), loadoutId: Number(match[2]) };
+  }
+  function open() {
+    if (!opening) opening = new Promise((resolve, reject) => {
+      const request = indexedDB.open("mwi-layu-virtual-loadouts", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("entries", { keyPath: "key" })
+        .createIndex("owner", "owner", { unique: false });
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => { db.close(); opening = null; };
+        resolve(db);
+      };
+      request.onerror = request.onblocked = () => { opening = null; reject(Error("无法打开虚拟配装存储，请检查浏览器存储权限。")); };
+    });
+    return opening;
+  }
+  async function transaction(owner, mode, work) {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("entries", mode), store = tx.objectStore("entries");
+      const request = store.index("owner").getAll(owner);
+      let result, failure;
+      request.onsuccess = () => {
+        try { result = work(request.result, store); }
+        catch (error) { failure = error; tx.abort(); }
+      };
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = tx.onerror = () => reject(failure || Error("虚拟配装保存失败，请检查存储空间后重试。"));
+    });
+  }
+  const owner = character => location.origin + "|" + character;
+  const list = character => transaction(owner(character), "readonly", rows => rows);
+  async function read(board) {
+    const parsed = source(board), io = root.__mwiLoadoutClipboardV2;
+    if (typeof io !== "function") throw Error("请更新开发加载器后刷新游戏页面。");
+    const text = await io(parsed.board); // Subscriptions always read, never write to the author's board.
+    const doc = app.Cloud.parse(parsed.character, parsed.loadoutId, text);
+    const scenes = doc.scenes.filter(row => row.removedAt == null);
+    if (doc.native) scenes.unshift({ id: "native:" + parsed.loadoutId, name: "当前配装 · " + doc.native.snapshot.raw.name,
+      snapshot: doc.native.snapshot, updatedAt: doc.native.updatedAt, native: true });
+    return scenes;
+  }
+  async function subscribe(character, input) {
+    const { board } = source(input), scope = owner(character);
+    const scenes = await read(board);
+    if (!scenes.length) throw Error("这个地址尚无可订阅的配装内容，请让分享者更新配装助手并完成同步。");
+    return transaction(scope, "readwrite", (rows, store) => {
+      const existing = rows.find(row => row.board === board);
+      if (existing) return existing;
+      const row = { key: scope + "|" + board, token: crypto.randomUUID(), owner: scope,
+        board, scenes, checked: Date.now(), error: "", attempted: Date.now() };
+      store.add(row); return row;
+    });
+  }
+  function refresh(character, entry) {
+    if (!entry.board) return Promise.resolve();
+    if (pending.has(entry.key)) return pending.get(entry.key);
+    const task = (async () => {
+      let scenes, error = "";
+      try { scenes = await read(entry.board); }
+      catch (failure) { error = failure.message || "订阅更新失败"; }
+      return transaction(owner(character), "readwrite", (rows, store) => {
+        const current = rows.find(row => row.key === entry.key && row.token === entry.token);
+        if (!current) return;
+        store.put({ ...current, ...(scenes ? { scenes, checked: Date.now() } : {}),
+          attempted: Date.now(), error });
+      });
+    })().finally(() => pending.delete(entry.key));
+    pending.set(entry.key, task); return task;
+  }
+  function save(character, title, snapshot) {
+    const validated = app.Core.validateSnapshot(snapshot), scope = owner(character);
+    const row = { key: scope + "|" + crypto.randomUUID(), token: crypto.randomUUID(), owner: scope,
+      board: null, scenes: [{ id: crypto.randomUUID(), name: app.Core.name(title), snapshot: validated }],
+      checked: Date.now(), error: "" };
+    return transaction(scope, "readwrite", (_, store) => { store.add(row); return row; });
+  }
+  function remove(character, entry) {
+    return transaction(owner(character), "readwrite", (rows, store) => {
+      const current = rows.find(row => row.key === entry.key && row.token === entry.token);
+      if (current) store.delete(current.key);
+    });
+  }
+  async function adopt(character, scene, raw, title) {
+    if (app.Adapter.cloudContext(false)?.character !== character) throw Error("角色已变化，请重新打开配装总览。");
+    const snapshot = app.Core.validateSnapshot(scene.snapshot);
+    if ((snapshot.raw.actionTypeHrid || "") !== (raw.actionTypeHrid || ""))
+      throw Error("请选择相同类型的原生配装。");
+    const scopeOwner = owner(character);
+    const ctx = { owner: scopeOwner, scope: scopeOwner + "|" + raw.id,
+      raw: { ...snapshot.raw, id: raw.id } };
+    const row = await app.Store.create(ctx, title);
+    app.Cloud.changed(character, raw.id);
+    if (typeof BroadcastChannel === "function") {
+      const channel = new BroadcastChannel("mwi-layu-loadout-scenes");
+      channel.postMessage({ scope: ctx.scope }); channel.close();
+    }
+    return row;
+  }
+  app.Virtual = Object.freeze({ source, list, subscribe, refresh, save, remove, adopt });
+})(globalThis);
+
+// ---- virtual_ui.js ----
+(function (root) {
+  "use strict";
+  const app = root.MWILoadoutScenes;
+  app.makeVirtualPanel = function (React) {
+    const h = React.createElement;
+    class Entry extends React.Component {
+      state = { selected: "", target: "", title: "", notice: "", busy: false, removing: false, expanded: false };
+      async run(work) {
+        if (this.state.busy) return;
+        this.setState({ busy: true, notice: "" });
+        try { await work(); }
+        catch (error) { if (this.alive) this.setState({ notice: error.message }); }
+        finally { if (this.alive) this.setState({ busy: false }); }
+      }
+      componentDidMount() { this.alive = true; }
+      componentWillUnmount() { this.alive = false; }
+      render() {
+        const { entry, owner, nativeProps, reload } = this.props;
+        const { scenes, board } = entry;
+        const scene = scenes.find(row => row.id === this.state.selected) || scenes[0];
+        const choices = Object.values(nativeProps.characterLoadoutDict || {}).filter(raw =>
+          scene && (raw.actionTypeHrid || "") === (scene.snapshot.raw.actionTypeHrid || ""));
+        const raw = choices.find(row => String(row.id) === this.state.target);
+        const btn = (label, click) => h("button", { type: "button", className: "mwi-overview-button",
+          disabled: this.state.busy, onClick: click }, label);
+        const details = scene && h("details", { onToggle: e => this.setState({ expanded: e.currentTarget.open }) },
+          h("summary", null, "查看配装内容"),
+          this.state.expanded && h(Snapshot, { snapshot: scene.snapshot, nativeProps }),
+          h("label", null, "保存到自己的配装",
+            h("select", { value: this.state.target, onChange: e => this.setState({ target: e.target.value }) },
+              h("option", { value: "" }, "选择同类型的原生配装"), choices.map(row => h("option", { key: row.id, value: row.id }, row.name)))),
+          h("label", null, "子方案名称", h("input", { maxLength: 60, value: this.state.title,
+            placeholder: scene.name, onChange: e => this.setState({ title: e.target.value }) })),
+          btn("保存为我的子方案", () => this.run(async () => {
+            if (!raw) throw Error("请选择用于保存的原生配装。");
+            await app.Virtual.adopt(owner, scene, raw, this.state.title.trim() || scene.name.slice(0, 60));
+            if (this.alive) this.setState({ notice: "已保存为子方案，可到对应配装的详情中查看切换指引。" });
+          })),
+          board && btn("另存为本地虚拟配装", () => this.run(async () => {
+            await app.Virtual.save(owner, scene.name.slice(0, 60), scene.snapshot); await reload();
+            if (this.alive) this.setState({ notice: "已保存独立副本。" });
+          })));
+        return h("article", { className: "mwi-virtual-card" },
+          h("h3", null, board ? "订阅 · " + board : scene?.name || "虚拟配装"),
+          board && h("a", { href: "https://clipboard.im/" + board, target: "_blank", rel: "noopener noreferrer" }, "查看来源"),
+          board && scenes.length === 1 && h("p", null, scene.name),
+          h("p", { className: entry.error ? "mwi-cloud-warning" : "" }, entry.error ?
+            "更新失败，保留上次内容 · " + entry.error : "上次读取 " + new Date(entry.checked).toLocaleString()),
+          scenes.length > 1 && h("label", null, "配装内容",
+            h("select", { value: scene.id, onChange: e => this.setState({ selected: e.target.value, target: "", title: "" }) },
+              scenes.map(row => h("option", { key: row.id, value: row.id }, row.name)))),
+          !scene && h("p", null, "来源已无可订阅的配装内容。"),
+          details,
+          h("div", { className: "mwi-virtual-actions" },
+            board && btn("检查更新", () => this.run(async () => { await app.Virtual.refresh(owner, entry); await reload(); })),
+            btn(board ? "取消订阅" : "移除虚拟配装", () => this.setState({ removing: true }))),
+          this.state.removing && h("div", null,
+            h("p", null, board ? "取消这项订阅并移除本机缓存？" : "移除这份本地虚拟配装？"),
+            btn("确认移除", () => this.run(async () => { await app.Virtual.remove(owner, entry); await reload(); })),
+            btn("保留", () => this.setState({ removing: false }))),
+          h("p", { role: "status" }, this.state.notice));
+      }
+    }
+    class Snapshot extends React.Component {
+      render() {
+        const { snapshot, nativeProps } = this.props, raw = snapshot.raw;
+        const empty = { ...raw, wearableMap: {}, abilityMap: {}, foodItemHrids: [], drinkItemHrids: [],
+          abilityCombatTriggersMap: {}, consumableCombatTriggersMap: {} };
+        const changes = app.Core.diff(empty, snapshot);
+        return h("dl", { className: "mwi-virtual-items" },
+          h("dt", null, "强化选择"), h("dd", null, app.Adapter.describe({ props: nativeProps }, { kind: "setting" }, raw.useExactEnhancement)),
+          changes.map((change, i) => h(React.Fragment, { key: i },
+            h("dt", null, change.label), h("dd", null, app.Adapter.describe({ props: nativeProps }, change, change.to)))));
+      }
+    }
+    return class VirtualPanel extends React.Component {
+      state = { entries: [], input: "", notice: "", busy: false, loading: true };
+      componentDidMount() {
+        this.alive = true;
+        this.check();
+        this.timer = setInterval(() => this.check(), 30000);
+      }
+      componentWillUnmount() { this.alive = false; clearInterval(this.timer); }
+      fail(error) { if (this.alive) this.setState({ notice: error.message, loading: false }); }
+      reload = async () => {
+        const entries = await app.Virtual.list(this.props.owner);
+        if (this.alive) {
+          const signature = JSON.stringify(entries);
+          if (signature !== this.signature) {
+            this.signature = signature;
+            this.setState({ entries, loading: false });
+          }
+        }
+      };
+      async check() {
+        if (this.checking) return;
+        this.checking = true;
+        try {
+          const entries = await app.Virtual.list(this.props.owner);
+          for (const entry of entries) {
+            if (!this.alive || document.hidden || root.navigator.onLine === false) break;
+            if (entry.board && Date.now() - (entry.attempted || 0) >= 300000)
+              await app.Virtual.refresh(this.props.owner, entry);
+          }
+          await this.reload();
+        } catch (error) { this.fail(error); }
+        finally { this.checking = false; }
+      }
+      subscribe = async event => {
+        event.preventDefault();
+        if (this.state.busy) return;
+        this.setState({ busy: true, notice: "" });
+        try {
+          await app.Virtual.subscribe(this.props.owner, this.state.input);
+          await this.reload();
+          if (this.alive) this.setState({ input: "", notice: "已订阅，打开配装总览时每 5 分钟检查更新。" });
+        } catch (error) { this.fail(error); }
+        finally { if (this.alive) this.setState({ busy: false }); }
+      };
+      render() {
+        return h("section", { className: "mwi-virtual-panel", "aria-label": "虚拟配装" },
+          h("h2", null, "虚拟配装"),
+          h("p", null, "订阅他人的当前原生配装及子方案，或在配装详情中保存一份本地虚拟配装。"),
+          h("p", null, "订阅列表与虚拟配装保存在本机；订阅只读，保存为自己的子方案后可参与云同步。"),
+          h("form", { onSubmit: this.subscribe },
+            h("input", { "aria-label": "配装分享地址", placeholder: "粘贴配装助手的剪贴板地址", value: this.state.input,
+              onChange: e => this.setState({ input: e.target.value }), required: true }),
+            h("button", { type: "submit", className: "mwi-overview-button", disabled: this.state.busy }, this.state.busy ? "读取中…" : "订阅配装")),
+          h("p", { role: "status" }, this.state.notice),
+          this.state.loading ? h("p", null, "读取中…") :
+            !this.state.entries.length && h("p", null, "暂无虚拟配装"),
+          h("div", { className: "mwi-virtual-grid" }, this.state.entries.map(entry =>
+            h(Entry, { key: entry.token, entry, owner: this.props.owner, nativeProps: this.props.nativeProps, reload: this.reload }))));
+      }
+    };
+  };
 })(globalThis);
 
 // ---- overview.js ----
 (function (root) {
   "use strict";
   const app = root.MWILoadoutScenes;
-  const css = "[data-mwi-loadout-overview] {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));\n  align-items: start;\n  gap: .75rem;\n  text-align: start;\n}\n.mwi-overview-card {\n  container-type: inline-size;\n  min-width: 0;\n  border: 1px solid var(--color-divider, #4c5677);\n  border-radius: var(--radius-sm, 8px);\n  background: var(--color-midnight-700, #202333);\n  color: var(--color-text-dark-mode, #f1f2fa);\n}\n.mwi-overview-card-head {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: .25rem .5rem;\n  min-height: 2.75rem;\n  padding: .35rem .625rem;\n  background: var(--color-midnight-500, #2b3045);\n  border-block-end: 1px solid var(--color-divider, #4c5677);\n  border-start-start-radius: inherit;\n  border-start-end-radius: inherit;\n}\n.mwi-overview-card-head h3 {\n  display: flex;\n  align-items: center;\n  flex: 1 1 6rem;\n  min-width: 0;\n  margin: 0;\n  font-size: 1rem;\n  font-weight: 600;\n  overflow-wrap: anywhere;\n}\n.mwi-overview-options {\n  display: flex;\n  align-items: center;\n  gap: .25rem .625rem;\n  padding: .125rem .625rem 0;\n  white-space: nowrap;\n}\n.mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { margin: 0; min-height: 2rem; }\n.mwi-overview-options [class*=\"MuiTypography-root\"] { font-size: .8rem; }\n.mwi-overview-button {\n  color: var(--color-text-dark-mode, #f1f2fa);\n  background: var(--color-midnight-500, #2b3045);\n  border: 1px solid var(--color-space-300, #7d87b0);\n  border-radius: var(--radius-sm, 5px);\n  font: inherit;\n  font-size: .82rem;\n  padding: .3rem .55rem;\n  min-height: 2rem;\n  cursor: pointer;\n}\n.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }\n.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }\n.mwi-overview-toggle { align-self: flex-start; }\n.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] { min-width: 0; width: 100%; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));\n  width: 100%;\n  box-sizing: border-box;\n  padding: .625rem;\n  gap: .625rem;\n  background: transparent;\n}\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_playerModel__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_abilities__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }\n.mwi-overview-has-requirement { position: relative; }\n.mwi-overview-requirement {\n  position: absolute;\n  inset: .125rem .1875rem auto auto;\n  z-index: 1;\n  color: #ffc268;\n  font-size: .8125rem;\n  font-variant-numeric: tabular-nums;\n  font-weight: 600;\n  line-height: 1;\n  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;\n  pointer-events: none;\n}\n@media (pointer: coarse) {\n  .mwi-overview-button { min-height: 2.75rem; }\n  .mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { min-height: 2.75rem; }\n}\n";
+  const css = "[data-mwi-loadout-overview] {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));\n  align-items: start;\n  gap: .75rem;\n  text-align: start;\n}\n.mwi-overview-card {\n  container-type: inline-size;\n  min-width: 0;\n  border: 1px solid var(--color-divider, #4c5677);\n  border-radius: var(--radius-sm, 8px);\n  background: var(--color-midnight-700, #202333);\n  color: var(--color-text-dark-mode, #f1f2fa);\n}\n.mwi-overview-card-head {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: .25rem .5rem;\n  min-height: 2.75rem;\n  padding: .35rem .625rem;\n  background: var(--color-midnight-500, #2b3045);\n  border-block-end: 1px solid var(--color-divider, #4c5677);\n  border-start-start-radius: inherit;\n  border-start-end-radius: inherit;\n}\n.mwi-overview-card-head h3 {\n  display: flex;\n  align-items: center;\n  flex: 1 1 6rem;\n  min-width: 0;\n  margin: 0;\n  font-size: 1rem;\n  font-weight: 600;\n  overflow-wrap: anywhere;\n}\n.mwi-overview-options {\n  display: flex;\n  align-items: center;\n  gap: .25rem .625rem;\n  padding: .125rem .625rem 0;\n  white-space: nowrap;\n}\n.mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { margin: 0; min-height: 2rem; }\n.mwi-overview-options [class*=\"MuiTypography-root\"] { font-size: .8rem; }\n.mwi-overview-button {\n  color: var(--color-text-dark-mode, #f1f2fa);\n  background: var(--color-midnight-500, #2b3045);\n  border: 1px solid var(--color-space-300, #7d87b0);\n  border-radius: var(--radius-sm, 5px);\n  font: inherit;\n  font-size: .82rem;\n  padding: .3rem .55rem;\n  min-height: 2rem;\n  cursor: pointer;\n}\n.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }\n.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }\n.mwi-overview-toolbar { display: flex; flex-wrap: wrap; gap: .375rem; }\n.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] { min-width: 0; width: 100%; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));\n  width: 100%;\n  box-sizing: border-box;\n  padding: .625rem;\n  gap: .625rem;\n  background: transparent;\n}\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_playerModel__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_abilities__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }\n.mwi-overview-has-requirement { position: relative; }\n.mwi-overview-requirement {\n  position: absolute;\n  inset: .125rem .1875rem auto auto;\n  z-index: 1;\n  color: #ffc268;\n  font-size: .8125rem;\n  font-variant-numeric: tabular-nums;\n  font-weight: 600;\n  line-height: 1;\n  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;\n  pointer-events: none;\n}\n@media (pointer: coarse) {\n  .mwi-overview-button { min-height: 2.75rem; }\n  .mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { min-height: 2.75rem; }\n}\n\n.mwi-overview-cloud { color: #c3c6db; font-size: .78rem; line-height: 1.4; }\n.mwi-overview-card-head .mwi-overview-cloud { flex: 0 0 100%; }\n.mwi-overview-cloud.mwi-cloud-warning { color: #ffd27a; }\n\n.mwi-virtual-panel { margin-block: 1.25rem; text-align: start; color: #eeeef5; }\n.mwi-virtual-panel h2 { font-size: 1.1rem; }\n.mwi-virtual-panel p { font-size: .85rem; color: #c3c6db; margin: .4rem 0; }\n.mwi-virtual-panel form, .mwi-virtual-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }\n.mwi-virtual-panel input, .mwi-virtual-panel select { background: #171822; color: #eeeef5; border: 1px solid #7d87b0; border-radius: 5px; padding: .5rem; min-width: 0; max-width: 100%; font: inherit; }\n.mwi-virtual-panel form input { flex: 1 1 16rem; }\n.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }\n.mwi-virtual-card { padding: .8rem; background: #202333; border: 1px solid #4c5677; border-radius: 8px; overflow-wrap: anywhere; min-width: 0; }\n.mwi-virtual-card h3 { font-size: 1rem; margin: 0 0 .5rem; }\n.mwi-virtual-card a { color: #bbcaff; }\n.mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }\n.mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }\n.mwi-virtual-items { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .4rem .7rem; font-size: .85rem; }\n.mwi-virtual-items dd { margin: 0; white-space: pre-wrap; }\n.mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }\n.mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }\n";
   const marker = "data-mwi-loadout-overview";
+  const collapseKey = owner => `mwi-layu:loadout-overview:collapsed:v1:${owner}`;
   const installed = new WeakMap();
   const slotTypes = new Set(["equipment", "ability", "food", "drink", "ability_trigger", "food_trigger", "drink_trigger"]);
   const optionLabels = [
@@ -622,6 +1463,13 @@
     return requirements;
   }
 
+  function readCollapsed(owner) {
+    try {
+      const ids = JSON.parse(root.localStorage.getItem(collapseKey(owner)));
+      return new Set(Array.isArray(ids) ? ids.filter(id => Number.isSafeInteger(id) && id > 0) : []);
+    } catch (_) { return null; }
+  }
+
   const hasClass = (node, name) => typeof node?.props?.className === "string" && node.props.className.includes(`LoadoutsPanel_${name}__`);
   const children = (React, node) => React.Children.toArray(node?.props?.children);
   const child = (React, node, name) => children(React, node).find(entry => hasClass(entry, name));
@@ -667,7 +1515,43 @@
     return React.cloneElement(setup, null, sections);
   }
 
-  function makeCard(React, NativePanel) {
+  // Only the small status labels subscribe. An update never rerenders native slots.
+  function makeCloudLabel(React) {
+    return class CloudLabel extends React.Component {
+      componentDidMount() { this.listen(); }
+      componentDidUpdate(prev) {
+        if (prev.owner !== this.props.owner || prev.ids !== this.props.ids) this.listen();
+      }
+      componentWillUnmount() { this.unsubscribe?.(); }
+      listen() {
+        this.unsubscribe?.();
+        const { owner, ids } = this.props;
+        const warnings = new Set();
+        const refresh = id => {
+          const info = app.Cloud.info(owner, id);
+          if (!this.props.tally) { this.paint("云同步 · " + info.label, info.warning); return; }
+          if (info.warning) warnings.add(id);
+          else warnings.delete(id);
+          this.paint(warnings.size ? warnings.size + " 套配装待处理" : "", warnings.size > 0);
+        };
+        const stops = ids.split(",").map(Number).map(id => {
+          refresh(id);
+          return app.Cloud.subscribe(owner, id, () => refresh(id));
+        });
+        this.unsubscribe = () => stops.forEach(stop => stop());
+      }
+      paint(text, warning) {
+        if (this.label.textContent !== text) this.label.textContent = text;
+        this.label.hidden = !text;
+        this.label.classList.toggle("mwi-cloud-warning", warning);
+      }
+      render() {
+        return React.createElement("span", { className: "mwi-overview-cloud", ref: node => { this.label = node; } });
+      }
+    };
+  }
+
+  function makeCard(React, NativePanel, CloudLabel) {
     const h = React.createElement;
     class NativeSlots extends NativePanel {
       constructor(props) {
@@ -680,10 +1564,11 @@
       render() {
         const shell = this.renderLoadout();
         if (!hasClass(shell, "selectedLoadout")) throw Error("配装详情结构已变化");
-        const setup = cardSetup(React, shell, this.props.overviewRequirements);
+        const { overviewContentId, overviewRequirements } = this.props;
         const details = child(React, shell, "details");
         const options = this.props.overviewCanUpdateOptions && cardOptions(React, details, this);
-        return React.cloneElement(shell, null, React.cloneElement(details, null, options, setup));
+        const setup = cardSetup(React, shell, overviewRequirements);
+        return React.cloneElement(shell, null, React.cloneElement(details, { id: overviewContentId }, options, setup));
       }
     }
     // Keep a malformed native card from taking down the surrounding game UI.
@@ -702,14 +1587,20 @@
       updateSlot = change => this.update(this.props.sendSlot, change);
       updateOptions = change => this.update(this.props.sendOptions, change);
       render() {
-        const { id, name, icon, openDetails, nativeProps } = this.props;
+        const { id, name, icon, openDetails, toggleCard, nativeProps, overviewCollapsed } = this.props;
+        const { overviewContentId } = nativeProps;
+        const toggleLabel = overviewCollapsed ? "展开" : "收起";
+        const content = overviewCollapsed ? h("div", { id: overviewContentId, hidden: true })
+          : this.state.failed ? h("p", { id: overviewContentId, className: "mwi-overview-notice", role: "status" }, "这套配装暂时无法展开，可以打开详情编辑。")
+            : h(NativeSlots, { ...nativeProps, updateLoadoutSlotHandler: this.updateSlot, updateLoadoutHandler: this.updateOptions });
         return h("article", { ref: this.rememberCard, className: "mwi-overview-card", "data-mwi-overview-id": id, "aria-label": name },
           h("header", { className: "mwi-overview-card-head" },
             h("h3", null, icon, name),
-            h("button", { type: "button", className: "mwi-overview-button", "aria-label": `${name}的详情和子方案`, onClick: openDetails }, "详情")),
-          this.state.failed ? h("p", { className: "mwi-overview-notice", role: "status" }, "这套配装暂时无法展开，可以打开详情编辑。")
-            : h(NativeSlots, { ...nativeProps, updateLoadoutSlotHandler: this.updateSlot, updateLoadoutHandler: this.updateOptions }),
-          this.state.notice && h("p", { className: "mwi-overview-notice", role: "status" }, this.state.notice));
+            h("button", { type: "button", className: "mwi-overview-button",
+              "aria-label": `${toggleLabel}${name}`, "aria-expanded": !overviewCollapsed, "aria-controls": overviewContentId, onClick: toggleCard }, toggleLabel),
+            h("button", { type: "button", className: "mwi-overview-button", "aria-label": `${name}的详情和子方案`, onClick: openDetails }, "详情"),
+            app.Cloud && h(CloudLabel, { owner: nativeProps.characterInfo.characterID, ids: String(id) })),
+          content, !overviewCollapsed && this.state.notice && h("p", { className: "mwi-overview-notice", role: "status" }, this.state.notice));
       }
     };
   }
@@ -718,9 +1609,26 @@
     if (!(controller instanceof React.Component) || typeof controller.renderLoadout !== "function" ||
         typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
     const render = controller.render;
-    const Card = makeCard(React, controller.constructor);
+    const CloudLabel = makeCloudLabel(React);
+    const VirtualPanel = app.makeVirtualPanel?.(React);
+    const Card = makeCard(React, controller.constructor, CloudLabel);
     const mounted = { panel, requirements: readRequirements(codec) };
+    let collapsed = new Set(), collapsedOwner, collapseSaveFailed = false;
     const h = React.createElement;
+
+    function changeCollapsed(owner, change) {
+      const { characterInfo, characterLoadoutDict } = controller.props;
+      if (!showGrid || owner !== collapsedOwner || owner !== characterInfo?.characterID) return;
+      // Use the latest saved choices so edits in another tab are preserved.
+      if (!collapseSaveFailed) collapsed = readCollapsed(owner) ?? collapsed;
+      change(collapsed);
+      for (const id of collapsed) if (!Object.hasOwn(characterLoadoutDict, id)) collapsed.delete(id);
+      try {
+        root.localStorage.setItem(collapseKey(owner), JSON.stringify([...collapsed]));
+        collapseSaveFailed = false;
+      } catch (_) { collapseSaveFailed = true; }
+      controller.forceUpdate();
+    }
 
     function currentCard(owner, id, element, change) {
       const { props, state } = controller;
@@ -730,7 +1638,7 @@
     }
 
     function sendSlot(owner, id, element, change) {
-      if (!currentCard(owner, id, element, change) || !slotTypes.has(change.slotType) ||
+      if (collapsed.has(id) || !currentCard(owner, id, element, change) || !slotTypes.has(change.slotType) ||
           typeof controller.props.updateLoadoutSlotHandler !== "function") return false;
       controller.props.updateLoadoutSlotHandler(change);
       return true;
@@ -738,7 +1646,7 @@
 
     function sendOptions(owner, id, element, change) {
       const { props } = controller;
-      if (!currentCard(owner, id, element, change) || typeof props.updateLoadoutHandler !== "function" ||
+      if (collapsed.has(id) || !currentCard(owner, id, element, change) || typeof props.updateLoadoutHandler !== "function" ||
           change.name !== props.characterLoadoutDict[id].name ||
           ![change.isDefault, change.suppressValidation, change.useExactEnhancement].every(value => typeof value === "boolean")) return false;
       props.updateLoadoutHandler(change);
@@ -751,26 +1659,51 @@
       const { props } = controller, owner = props.characterInfo?.characterID;
       if (!Number.isSafeInteger(owner) || owner <= 0 || typeof props.updateLoadoutSlotHandler !== "function") return native;
       const rows = children(React, list);
-      if (!rows.length) return native;
+      if (!rows.length && !VirtualPanel) return native;
+      if (collapsedOwner !== owner) {
+        collapsed = readCollapsed(owner) ?? new Set();
+        collapsedOwner = owner;
+        collapseSaveFailed = false;
+      }
       const cards = rows.map(row => {
         const id = row.props?.["data-loadout-id"], loadout = props.characterLoadoutDict[id];
         if (!Number.isSafeInteger(id) || loadout?.id !== id || typeof loadout.name !== "string" ||
             typeof row.props.onClick !== "function") throw Error("配装列表结构已变化");
+        const overviewCollapsed = collapsed.has(id);
         return h(Card, {
-          key: `${owner}:${id}`, id, name: loadout.name,
+          key: `${owner}:${id}`, id, name: loadout.name, overviewCollapsed,
           icon: children(React, row)[1], openDetails: row.props.onClick,
+          toggleCard: () => changeCollapsed(owner, ids => {
+            if (overviewCollapsed) ids.delete(id);
+            else ids.add(id);
+          }),
           nativeProps: { ...props, overviewId: id, overviewRequirements: mounted.requirements,
+            overviewContentId: `mwi-loadout-content-${owner}-${id}`,
             overviewCanUpdateOptions: typeof props.updateLoadoutHandler === "function" },
           sendSlot: (element, change) => sendSlot(owner, id, element, change),
           sendOptions: (element, change) => sendOptions(owner, id, element, change)
         });
       });
       const toggle = h("button", {
-        key: "mwi-overview-toggle", type: "button", className: "mwi-overview-button mwi-overview-toggle",
+        key: "mwi-overview-toggle", type: "button", className: "mwi-overview-button",
         onClick: () => { showGrid = !showGrid; controller.forceUpdate(); }
       }, showGrid ? "原生列表" : "配装总览");
-      const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toggle,
+      const allCollapsed = cards.every(card => collapsed.has(card.props.id));
+      const toggleAll = showGrid && h("button", {
+        key: "mwi-overview-toggle-all", type: "button", className: "mwi-overview-button",
+        onClick: () => changeCollapsed(owner, ids => {
+          for (const card of cards) {
+            if (allCollapsed) ids.delete(card.props.id);
+            else ids.add(card.props.id);
+          }
+        })
+      }, allCollapsed ? "全部展开" : "全部收起");
+      const toolbar = h("div", { key: "mwi-overview-toolbar", className: "mwi-overview-toolbar" }, toggle, toggleAll,
+        showGrid && app.Cloud && h(CloudLabel, { key: "sync", owner, ids: cards.map(card => card.props.id).join(","), tally: true }),
+        showGrid && collapseSaveFailed && h("span", { role: "status" }, "折叠状态未能保存，刷新后可能恢复之前的状态。"));
+      const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toolbar,
         showGrid ? h("div", { key: "mwi-overview-grid", [marker]: "" }, cards) : entry]);
+      if (VirtualPanel) mainChildren.push(h(VirtualPanel, { key: "virtual-" + owner, owner, nativeProps: props }));
       const updatedMain = React.cloneElement(main, null, mainChildren);
       return React.cloneElement(native, null, children(React, native)
         .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));
@@ -820,7 +1753,7 @@
   if (app.started) return;
   app.started = true;
   const { Core, Adapter, Store } = app;
-  const css = ":host { display: block; width: 21.25rem; max-width: 100%; min-width: 0; text-align: left; color: #eeeef5; font: inherit; --scene-surface: #202130; --scene-line: #555a7e; --scene-primary: #465bb3; --scene-muted: #c3c6db; --scene-warn: #ffd27a; }\n* { box-sizing: border-box; }\nsection { overflow-wrap: anywhere; margin: 12px 0 16px; padding: 12px 0; border-top: 1px solid var(--scene-line); border-bottom: 1px solid var(--scene-line); }\nh2 { margin: 0; font-size: 1em; font-weight: 600; }\np { margin: 0; line-height: 1.5; }\n.header, .actions, .notice, .change-title { display: flex; align-items: center; gap: 8px; }\n.header { justify-content: space-between; margin-bottom: 10px; }\n.header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }\n.header-actions .update-button { width: calc(4em + 22px); flex: 0 0 auto; white-space: nowrap; text-align: center; }\n.choices { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }\nbutton, input { font: inherit; border-radius: 5px; min-height: 36px; }\nbutton { color: inherit; background: var(--scene-surface); border: 1px solid var(--scene-line); padding: 6px 10px; cursor: pointer; text-align: start; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }\nbutton:hover { background: #30344e; }\nbutton[aria-pressed=\"true\"], button.primary { background: var(--scene-primary); border-color: #8a9ce8; }\nbutton:disabled { opacity: .55; cursor: not-allowed; }\nbutton:focus-visible, input:focus-visible, summary:focus-visible, li:focus { outline: 2px solid #c0ccff; outline-offset: 3px; }\n.icon-button { width: 36px; flex: 0 0 36px; padding: 8px; display: inline-grid; place-items: center; }\nsvg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }\ninput { color: inherit; background: #171822; border: 1px solid var(--scene-line); padding: 8px; min-width: 0; width: 100%; caret-color: #c0ccff; }\ninput::placeholder { color: var(--scene-muted); }\n.editor { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; margin: 12px 0; }\n.editor label { font-size: .9em; }\n.actions { justify-content: flex-end; }\n.menu { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; margin: 10px 0; padding: 5px; background: var(--scene-surface); border: 1px solid var(--scene-line); border-radius: 5px; }\n.menu button { background: transparent; border-color: transparent; }\n.menu button:hover { background: #30344e; }\n.notice { margin-top: 10px; flex-wrap: wrap; font-size: .85em; color: var(--scene-muted); }\n#status { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }\n#status.error, .pending { color: var(--scene-warn); }\n.notice button { min-height: 30px; padding: 3px 8px; }\n.empty, .muted { color: var(--scene-muted); font-size: .85em; }\n.empty { flex: 1; }\n#scene-differences { margin-top: 10px; }\nsummary { padding: 7px 0; cursor: pointer; min-height: 36px; font-size: .9em; }\n#summary { font-weight: 500; }\nol { list-style: none; padding: 0; margin: 6px 0 0; }\nli { padding: 10px 0; border-bottom: 1px solid #3d405c; overflow-wrap: anywhere; }\nli:last-child { border-bottom: 0; padding-bottom: 0; }\n.change-title { flex-wrap: wrap; margin-bottom: 5px; font-size: .9em; }\n.change-title strong { flex: 1; font-weight: 500; }\n.change-title button { min-height: 30px; border: 0; background: transparent; padding: 3px 0 3px 8px; color: var(--scene-muted); }\n.values { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 8px; line-height: 1.5; font-size: .9em; }\n.values .current { color: var(--scene-muted); }\n.values .goal { color: var(--scene-warn); }\npre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85em; padding: 10px; background: #171822; border-radius: 5px; }\n:host([data-mwi-scene-marker]) { width: 100%; max-width: 100%; margin-top: 5px; color: var(--scene-warn); font: 11px/1.4 -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif; }\n.target-markers { display: grid; grid-template-columns: minmax(0,1fr); gap: 3px; overflow-wrap: anywhere; }\n.target-value { display: block; }\n.target-condition { color: var(--scene-warn); border: 0; border-radius: 2px; padding: 3px 0; min-height: 26px; width: 100%; font: inherit; text-align: start; background: transparent; text-decoration: underline; text-underline-offset: 3px; }\n[hidden] { display: none !important; }\n::selection { background: #465bb3; color: #fff; }\n* { scrollbar-width: thin; scrollbar-color: var(--scene-line) #171822; }\n@media (max-width: 520px) { .choices button { flex-grow: 1; } .choices .icon-button { flex-grow: 0; } }\n@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }\n\n.choices button { -webkit-touch-callout: none; user-select: none; }\n";
+  const css = ":host { display: block; width: 21.25rem; max-width: 100%; min-width: 0; text-align: left; color: #eeeef5; font: inherit; --scene-surface: #202130; --scene-line: #555a7e; --scene-primary: #465bb3; --scene-muted: #c3c6db; --scene-warn: #ffd27a; }\n* { box-sizing: border-box; }\nsection { overflow-wrap: anywhere; margin: 12px 0 16px; padding: 12px 0; border-top: 1px solid var(--scene-line); border-bottom: 1px solid var(--scene-line); }\nh2 { margin: 0; font-size: 1em; font-weight: 600; }\np { margin: 0; line-height: 1.5; }\n.header, .actions, .notice, .change-title { display: flex; align-items: center; gap: 8px; }\n.header { justify-content: space-between; margin-bottom: 10px; }\n.header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }\n.header-actions .update-button { width: calc(4em + 22px); flex: 0 0 auto; white-space: nowrap; text-align: center; }\n.choices { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }\nbutton, input { font: inherit; border-radius: 5px; min-height: 36px; }\nbutton { color: inherit; background: var(--scene-surface); border: 1px solid var(--scene-line); padding: 6px 10px; cursor: pointer; text-align: start; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }\nbutton:hover { background: #30344e; }\nbutton[aria-pressed=\"true\"], button.primary { background: var(--scene-primary); border-color: #8a9ce8; }\nbutton:disabled { opacity: .55; cursor: not-allowed; }\nbutton:focus-visible, input:focus-visible, summary:focus-visible, li:focus { outline: 2px solid #c0ccff; outline-offset: 3px; }\n.icon-button { width: 36px; flex: 0 0 36px; padding: 8px; display: inline-grid; place-items: center; }\nsvg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }\ninput { color: inherit; background: #171822; border: 1px solid var(--scene-line); padding: 8px; min-width: 0; width: 100%; caret-color: #c0ccff; }\ninput::placeholder { color: var(--scene-muted); }\n.editor { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; margin: 12px 0; }\n.editor label { font-size: .9em; }\n.actions { justify-content: flex-end; }\n.menu { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; margin: 10px 0; padding: 5px; background: var(--scene-surface); border: 1px solid var(--scene-line); border-radius: 5px; }\n.menu button { background: transparent; border-color: transparent; }\n.menu button:hover { background: #30344e; }\n.notice { margin-top: 10px; flex-wrap: wrap; font-size: .85em; color: var(--scene-muted); }\n#status { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }\n#status.error, .pending { color: var(--scene-warn); }\n.notice button { min-height: 30px; padding: 3px 8px; }\n.empty, .muted { color: var(--scene-muted); font-size: .85em; }\n.empty { flex: 1; }\n#scene-differences { margin-top: 10px; }\nsummary { padding: 7px 0; cursor: pointer; min-height: 36px; font-size: .9em; }\n#summary { font-weight: 500; }\nol { list-style: none; padding: 0; margin: 6px 0 0; }\nli { padding: 10px 0; border-bottom: 1px solid #3d405c; overflow-wrap: anywhere; }\nli:last-child { border-bottom: 0; padding-bottom: 0; }\n.change-title { flex-wrap: wrap; margin-bottom: 5px; font-size: .9em; }\n.change-title strong { flex: 1; font-weight: 500; }\n.change-title button { min-height: 30px; border: 0; background: transparent; padding: 3px 0 3px 8px; color: var(--scene-muted); }\n.values { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 8px; line-height: 1.5; font-size: .9em; }\n.values .current { color: var(--scene-muted); }\n.values .goal { color: var(--scene-warn); }\npre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85em; padding: 10px; background: #171822; border-radius: 5px; }\n:host([data-mwi-scene-marker]) { width: 100%; max-width: 100%; margin-top: 5px; color: var(--scene-warn); font: 11px/1.4 -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif; }\n.target-markers { display: grid; grid-template-columns: minmax(0,1fr); gap: 3px; overflow-wrap: anywhere; }\n.target-value { display: block; }\n.target-condition { color: var(--scene-warn); border: 0; border-radius: 2px; padding: 3px 0; min-height: 26px; width: 100%; font: inherit; text-align: start; background: transparent; text-decoration: underline; text-underline-offset: 3px; }\n[hidden] { display: none !important; }\n::selection { background: #465bb3; color: #fff; }\n* { scrollbar-width: thin; scrollbar-color: var(--scene-line) #171822; }\n@media (max-width: 520px) { .choices button { flex-grow: 1; } .choices .icon-button { flex-grow: 0; } }\n@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }\n\n.choices button { -webkit-touch-callout: none; user-select: none; }\n\n.cloud-panel { border-top: 1px solid var(--scene-line); margin-top: 10px; }\n.cloud-panel > summary { padding: 8px 0; }\n.cloud-panel a { color: #bbcaff; overflow-wrap: anywhere; }\n.cloud-panel a:focus-visible { outline: 2px solid #c0ccff; outline-offset: 2px; }\n.cloud-warning, .cloud-note { color: var(--scene-warn); }\n.cloud-facts { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 5px 12px; margin: 8px 0; }\n.cloud-facts dt, .cloud-privacy { color: var(--scene-muted); }\n.cloud-facts dd { margin: 0; }\n.cloud-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }\n.cloud-feedback:empty { display: none; }\n.cloud-privacy, .cloud-facts { font-size: .88em; }\n.cloud-compare { padding: 8px; margin-top: 8px; background: var(--scene-surface); border: 1px solid var(--scene-line); border-radius: 5px; }\n.cloud-diff { list-style: none; margin: 0; padding: 0; }\n.cloud-diff li div { color: var(--scene-muted); }\n.cloud-confirm { border-inline-start: 2px solid var(--scene-warn); padding-inline-start: 8px; }\n";
   let mounted = null, context = null, rows = [], selectedId = null, busy = false, undo = null, confirmation = null;
   let last = "", loading = 0, failure = "", highlighted = [], unresolved = [];
   const markers = new Map();
@@ -860,6 +1793,7 @@
     markers.clear();
   }
   function detach() {
+    app.Cloud.setActive(null);
     loading++; clearHighlights(); mounted?.host.remove(); mounted = null; context = null; rows = []; selectedId = null;
     last = ""; undo = null; confirmation = null;
   }
@@ -868,7 +1802,10 @@
     if (!fresh || fresh.scope !== context?.scope || fresh.details !== context.details) throw Error("当前角色或父配装已变化，请在对应配装下重试。");
     return fresh;
   }
-  function notify(scope) { channel?.postMessage({ scope }); }
+  function notify(ctx) {
+    channel?.postMessage({ scope: ctx.scope });
+    app.Cloud.changed(ctx.props.characterInfo.characterID, ctx.raw.id);
+  }
   async function reload() {
     const token = ++loading, scope = context?.scope;
     if (!scope) return;
@@ -876,6 +1813,7 @@
       const result = await Store.list(scope);
       if (token !== loading || context?.scope !== scope) return;
       rows = result;
+      mounted.cloud.update(rows, context);
       if (!selected()) selectedId = null;
       render(); message(failure, Boolean(failure));
     } catch (error) { if (token === loading) message(error.message, true); }
@@ -894,7 +1832,7 @@
     const success = await run(async () => {
       const ctx = currentContext(), title = Core.name(mounted.name.value), ui = mounted;
       const row = await Store.create(ctx, title);
-      notify(ctx.scope);
+      notify(ctx);
       if (mounted !== ui) return;
       selectedId = row.id; mounted.name.value = ""; mounted.form.hidden = true;
       await reload(); if (mounted === ui) message(`已保存“${row.name}”`);
@@ -913,7 +1851,7 @@
     const success = await run(async () => {
       const ctx = currentContext(), ui = mounted;
       const row = await Store.mutate(ctx, pending.row, pending.action, mounted.rename.value);
-      notify(ctx.scope);
+      notify(ctx);
       if (mounted !== ui) return;
       if (pending.action === "remove") { undo = row; if (selectedId === row.id) selectedId = null; }
       confirmation = null; await reload();
@@ -927,7 +1865,7 @@
     if (!row) return;
     const success = await run(async () => {
       const ctx = currentContext(), ui = mounted;
-      const restored = await Store.mutate(ctx, row, "restore"); notify(ctx.scope);
+      const restored = await Store.mutate(ctx, row, "restore"); notify(ctx);
       if (mounted !== ui) return;
       undo = null; selectedId = restored.id; await reload(); if (mounted === ui) message(`已恢复“${restored.name}”`);
     });
@@ -1024,11 +1962,16 @@
       if (input.size > 5000000) throw Error("备份超过 5 MB，未导入。");
       const ctx = currentContext(), ui = mounted, text = await input.text();
       if (currentContext().scope !== ctx.scope) throw Error("当前父配装已变化，未导入备份，请在原配装下重试。");
-      const count = await Store.importBackup(ctx, text); notify(ctx.scope);
+      const count = await Store.importBackup(ctx, text); notify(ctx);
       if (mounted !== ui) return;
       file.value = ""; setMenu(false); await reload(); message(`已导入 ${count} 项`);
     }));
-    menu.append(renameButton, remove, stop, exportButton, importButton, file);
+    const virtualButton = button("保存为虚拟配装", () => run(async () => {
+      const fresh = currentContext();
+      await app.Virtual.save(fresh.props.characterInfo.characterID, fresh.raw.name, Core.snapshot(fresh.raw));
+      if (mounted?.host === host) { setMenu(false); message("已保存到配装总览的虚拟配装。"); }
+    }));
+    menu.append(renameButton, remove, stop, virtualButton, exportButton, importButton, file);
     const confirm = el("div", null, { class: "editor", hidden: "" }), confirmText = el("p", "");
     const rename = el("input", null, { maxlength: "60", "aria-label": "修改子方案名称" });
     const confirmRow = el("div", null, { class: "actions" });
@@ -1045,6 +1988,17 @@
     summaryControl.append(summary);
     const list = el("ol", null, { "aria-label": "需要手动修改的项目" }); differences.append(summaryControl, list);
     section.append(header, choices, menu, form, confirm, notice, differences);
+    const cloud = app.CloudUI.mount(ctx, el, button, (main, copy, choice) => run(async () => {
+      const fresh = currentContext(), ui = mounted;
+      if (fresh.scope !== ctx.scope) throw Error("请在原配装下比较版本。");
+      await Store.resolveConflict(fresh, main, copy, choice);
+      notify(fresh);
+      if (mounted !== ui) return;
+      await reload();
+      if (mounted === ui) message("版本选择已存本机。");
+    }));
+    app.Cloud.setActive(ctx.props.characterInfo.characterID, ctx.raw.id);
+    section.append(cloud.node, button("保存为虚拟配装", () => virtualButton.click()));
     if (root.__layuUsage_mwi_loadout) {
       const settings = el("details", null);
       settings.append(el("summary", "统计"), el("slot", null, { name: "usage-settings" }));
@@ -1059,9 +2013,10 @@
     shadow.addEventListener("focusout", event => {
       if (!host.matches(":focus-within") && !shadow.contains(event.relatedTarget)) setMenu(false);
     });
-    mounted = { host, shadow, choices, add, menu, form, name, save, cancelNew, update, cancelUpdate, renameButton, remove, stop, undoButton,
+    mounted = { cloud, host, shadow, choices, add, menu, form, name, save, cancelNew, update, cancelUpdate, renameButton, remove, stop, undoButton,
       confirm, confirmText, rename, commit, cancel, notice, status, retry, differences, summary, list, exportButton, importButton };
     context = ctx; rows = []; selectedId = null; undo = null; confirmation = null;
+    cloud.update(rows);
     render();
     // Keep loading in the choices row so removing a temporary notice won't move native controls.
     choices.querySelector(".empty").textContent = "读取中…";
@@ -1124,7 +2079,9 @@
         selectedId = entry.id; confirmation = null; setMenu(false); ui.form.hidden = true;
         ui.differences.open = false; render(); message(failure, Boolean(failure));
       }, { "data-scene-id": entry.id }); bindMenu(choice, entry.id); }
-      if (choice.textContent !== entry.name) choice.textContent = entry.name;
+      const label = active.some(other => other.id !== entry.id && other.name === entry.name)
+        ? entry.name + " · " + entry.id.slice(0, 6) : entry.name;
+      if (choice.textContent !== label) choice.textContent = label;
       choice.setAttribute("aria-pressed", String(entry.id === selectedId));
       choice.disabled = busy;
       if (ui.choices.children[index] !== choice) ui.choices.insertBefore(choice, ui.choices.children[index] || ui.add);
@@ -1199,6 +2156,7 @@
       const fingerprint = Core.stable(ctx.raw);
       context = ctx;
       if (last !== fingerprint || recovered || highlighted.some(node => !node.isConnected) || [...markers.values()].some(marker => !marker.host.isConnected) || unresolved.some(change => Adapter.target(ctx, change))) {
+        mounted.cloud.update(rows, ctx);
         last = fingerprint; render(); if (recovered) message("");
       }
       syncPicker();
@@ -1215,12 +2173,20 @@
     }
   }
   function start() {
+    app.Cloud.start(scope => {
+      channel?.postMessage({ scope });
+      if (context?.scope === scope) reload();
+    }, (character, id) => {
+      if (mounted && context?.props.characterInfo.characterID === character && context.raw.id === id) {
+        mounted.cloud.update(rows, context);
+      }
+    });
     app.ActionMemory.start();
     app.Overview.start();
     const style = el("style", '[data-mwi-scene-change] { outline: 2px solid #ffd27a !important; outline-offset: 3px !important; } [data-mwi-scene-target] { outline: 3px solid #70b7ff !important; outline-offset: -3px !important; box-shadow: inset 0 0 0 5px #171822 !important; }');
     style.id = "mwi-loadout-scenes-highlight-style"; document.head.append(style);
     const panelSelector = '[class*="LoadoutsPanel_loadoutsPanel__"]';
-    const ownedSelector = '#mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
+    const ownedSelector = '.mwi-overview-cloud, #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
     const options = { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "aria-hidden", "style", "class"] };
     const observer = new MutationObserver(records => {
       const relevant = records.some(record => {
