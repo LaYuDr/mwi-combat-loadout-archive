@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.10
+// @version      0.2.11
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
@@ -509,7 +509,7 @@
     return { dispose, report, client };
   }
   if (typeof module !== "undefined" && module.exports) module.exports = { createUsageClient, boot };
-  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.10","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
+  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.11","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
 setValue: typeof GM_setValue === "function" ? GM_setValue : null,
 listen: typeof GM_addValueChangeListener === "function" ? GM_addValueChangeListener : null,
 unlisten: typeof GM_removeValueChangeListener === "function" ? GM_removeValueChangeListener : null,
@@ -1828,14 +1828,90 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
   app.Virtual = Object.freeze({ source, list, subscribe, refresh, save, remove, adopt });
 })(globalThis);
 
+// ---- virtual_preview.js ----
+(function (root) {
+  "use strict";
+  const app = root.MWILoadoutScenes;
+  app.makeVirtualPreview = function (React, NativePanel) {
+    const h = React.createElement, noop = () => {};
+    const children = node => React.Children.toArray(node?.props?.children);
+    const part = (node, name) => node?.props?.className?.includes(`LoadoutsPanel_${name}__`);
+    const child = (node, name) => children(node).find(node => part(node, name));
+    function preview(snapshot, nativeProps) {
+      const raw = { ...app.Core.validateSnapshot(snapshot).raw, missingItemLocationHridSet: {},
+        missingFoodIndexSet: {}, missingDrinkIndexSet: {} };
+      // Build a separate display model. Never replace the game's loadout dictionary or handlers.
+      const props = { ...nativeProps };
+      for (const key of Object.keys(props)) if (typeof props[key] === "function" && key !== "t") props[key] = noop;
+      props.characterLoadoutDict = { [raw.id]: raw };
+      props.characterAbilityMap = new Map(Object.values(raw.abilityMap || {}).filter(Boolean)
+        .map(abilityHrid => [abilityHrid, { abilityHrid, level: 1, experience: 0 }]));
+      props.characterSkillMap = new Map(nativeProps.characterSkillMap || []);
+      // A viewer's locked slots must not hide skills in the shared configuration.
+      props.characterSkillMap.set("/skills/intelligence", { level: 999, experience: 0 });
+      props.characterItemMap = new Map();
+      props.loadLoadoutHandler = noop;
+      const renderer = new NativePanel(props);
+      renderer.state = { ...renderer.state, selectedCharacterLoadoutId: raw.id };
+      // This renderer is never mounted: it only produces the native slot tree.
+      const shell = renderer.renderLoadout(), details = child(shell, "details"), setup = child(details, "setup");
+      if (!setup) throw Error("原生配装布局暂不可用");
+      function decorate(node) {
+        if (!node || typeof node !== "object" || !node.props) return node;
+        const p = node.props;
+        let label;
+        if ("currentItem" in p) {
+          label = p.name + (p.currentItem ? "：" + app.Adapter.describe({ props: nativeProps },
+            { kind: "equipment" }, { itemHrid: p.currentItem.itemHrid,
+              ...(raw.useExactEnhancement ? { enhancementLevel: p.currentItem.enhancementLevel } : {}) }) : "：空槽");
+        } else if ("slotNumber" in p && "currentAbility" in p) {
+          label = "技能 " + p.slotNumber + "：" + app.Adapter.describe({ props: nativeProps }, { kind: "ability" }, p.currentAbility?.abilityHrid || null);
+        } else if ("consumableSlotTypeHrid" in p) {
+          label = (p.consumableSlotTypeHrid.endsWith("food") ? "食物 " : "饮料 ") + (p.slotIndex + 1) + "：" +
+            app.Adapter.describe({ props: nativeProps }, { kind: "food" }, p.itemHrid || null);
+        }
+        if (label) {
+          const safe = {};
+          for (const [key, value] of Object.entries(p)) if (typeof value === "function") safe[key] = key === "getItemSelectionsFunc" ? () => [] : noop;
+          safe.shouldCheckLevelRequirements = false;
+          safe.shouldHideSelectedItemCount = true;
+          return h("div", { key: node.key, className: "mwi-virtual-slot" },
+            h("div", { title: label, "aria-label": label, role: "img", tabIndex: 0 },
+              h("div", { inert: "", "aria-hidden": true }, React.cloneElement(node, safe))),
+            p.combatTriggers && h("details", { className: "mwi-virtual-trigger" },
+              h("summary", { "aria-label": label + "的触发条件" }, "⚙"),
+              h("p", null, app.Adapter.describe({ props: nativeProps }, { kind: "ability_trigger" }, p.combatTriggers))));
+        }
+        return React.cloneElement(node, null, ...children(node).filter(node => !part(node, "buttonsContainer")).map(decorate));
+      }
+      // Preserve the native CSS ancestry: its grid rules are scoped through these wrappers.
+      return React.cloneElement(shell, null, React.cloneElement(details, null, decorate(setup)));
+    }
+    return class NativePreview extends React.Component {
+      state = { failed: false };
+      static getDerivedStateFromError() { return { failed: true }; }
+      componentDidUpdate(previous) {
+        if (this.state.failed && previous.snapshot !== this.props.snapshot) this.setState({ failed: false });
+      }
+      render() {
+        if (this.state.failed) return h("p", null, "图标预览暂不可用，请展开文字与触发条件查看。");
+        let slots;
+        try { slots = preview(this.props.snapshot, this.props.nativeProps); }
+        catch (_) { return h("p", null, "图标预览暂不可用，请展开文字与触发条件查看。"); }
+        return h("div", { className: "mwi-virtual-native" }, slots);
+      }
+    };
+  };
+})(globalThis);
+
 // ---- virtual_ui.js ----
 (function (root) {
   "use strict";
   const app = root.MWILoadoutScenes;
-  app.makeVirtualPanel = function (React) {
+  app.makeVirtualPanel = function (React, NativePreview) {
     const h = React.createElement;
     class Entry extends React.Component {
-      state = { selected: "", target: "", title: "", notice: "", busy: false, removing: false, expanded: false };
+      state = { selected: "", target: "", title: "", notice: "", busy: false, removing: false, expanded: true, detailsOpen: false };
       async run(work) {
         if (this.state.busy) return;
         this.setState({ busy: true, notice: "" });
@@ -1846,7 +1922,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       componentDidMount() { this.alive = true; }
       componentWillUnmount() { this.alive = false; }
       render() {
-        const { entry, owner, nativeProps, reload } = this.props;
+        const { entry, owner, nativeProps, nativeIcons, reload } = this.props;
         const { scenes, board } = entry;
         const scene = scenes.find(row => row.id === this.state.selected) || scenes[0];
         const choices = Object.values(nativeProps.characterLoadoutDict || {}).filter(raw =>
@@ -1854,9 +1930,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         const raw = choices.find(row => String(row.id) === this.state.target);
         const btn = (label, click) => h("button", { type: "button", className: "mwi-overview-button",
           disabled: this.state.busy, onClick: click }, label);
-        const details = scene && h("details", { onToggle: e => this.setState({ expanded: e.currentTarget.open }) },
-          h("summary", null, "查看配装内容"),
-          this.state.expanded && h(Snapshot, { snapshot: scene.snapshot, nativeProps }),
+        const details = scene && h("div", { className: "mwi-virtual-transfer" },
           h("label", null, "保存到自己的配装",
             h("select", { value: this.state.target, onChange: e => this.setState({ target: e.target.value }) },
               h("option", { value: "" }, "选择同类型的原生配装"), choices.map(row => h("option", { key: row.id, value: row.id }, row.name)))),
@@ -1871,25 +1945,34 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
             await app.Virtual.save(owner, scene.name.slice(0, 60), scene.snapshot); await reload();
             if (this.alive) this.setState({ notice: "已保存独立副本。" });
           })));
-        return h("article", { className: "mwi-virtual-card" },
-          h("h3", null, board ? "订阅 · " + board : scene?.name || "虚拟配装"),
-          board && h("a", { href: "https://clipboard.im/" + board, target: "_blank", rel: "noopener noreferrer" }, "查看来源"),
-          board && scenes.length === 1 && h("p", null, scene.name),
-          h("p", { className: entry.error ? "mwi-cloud-warning" : "" }, entry.error ?
-            "更新失败，保留上次内容 · " + entry.error : "上次读取 " + new Date(entry.checked).toLocaleString()),
-          scenes.length > 1 && h("label", null, "配装内容",
-            h("select", { value: scene.id, onChange: e => this.setState({ selected: e.target.value, target: "", title: "" }) },
-              scenes.map(row => h("option", { key: row.id, value: row.id }, row.name)))),
-          !scene && h("p", null, "来源已无可订阅的配装内容。"),
-          details,
-          h("div", { className: "mwi-virtual-actions" },
-            board && btn("检查更新", () => this.run(async () => { await app.Virtual.refresh(owner, entry); await reload(); })),
-            btn(board ? "取消订阅" : "移除虚拟配装", () => this.setState({ removing: true }))),
-          this.state.removing && h("div", null,
-            h("p", null, board ? "取消这项订阅并移除本机缓存？" : "移除这份本地虚拟配装？"),
-            btn("确认移除", () => this.run(async () => { await app.Virtual.remove(owner, entry); await reload(); })),
-            btn("保留", () => this.setState({ removing: false }))),
-          h("p", { role: "status" }, this.state.notice));
+        const title = scene ? (scene.native ? scene.snapshot.raw.name : scene.name) : "虚拟配装";
+        const status = entry.error ? "更新失败 · 保留上次内容" : board ? "订阅配装 · 已缓存" : "本地虚拟配装";
+        return h("article", { className: "mwi-virtual-card mwi-overview-card" },
+          h("div", { className: "mwi-overview-card-head" },
+            h("h3", null, nativeIcons?.[scene?.snapshot.raw.actionTypeHrid || ""], title),
+            h("button", { type: "button", className: "mwi-overview-button", "aria-expanded": this.state.expanded,
+              onClick: () => this.setState({ expanded: !this.state.expanded }) }, this.state.expanded ? "收起" : "展开"),
+            h("button", { type: "button", className: "mwi-overview-button", "aria-expanded": this.state.detailsOpen,
+              onClick: () => this.setState({ expanded: true, detailsOpen: !this.state.detailsOpen }) }, "详情"),
+            h("span", { className: "mwi-overview-cloud" + (entry.error ? " mwi-cloud-warning" : "") }, status)),
+          this.state.expanded && h("div", { className: "mwi-virtual-body" },
+            scenes.length > 1 && h("label", null, "配装内容",
+              h("select", { value: scene.id, onChange: e => this.setState({ selected: e.target.value, target: "", title: "" }) },
+                scenes.map(row => h("option", { key: row.id, value: row.id }, row.name)))),
+            scene ? h(Snapshot, { snapshot: scene.snapshot, nativeProps }) : h("p", null, "来源已无可订阅的配装内容。"),
+            this.state.detailsOpen && h("div", { className: "mwi-virtual-management" },
+              board && h("a", { href: "https://clipboard.im/" + board, target: "_blank", rel: "noopener noreferrer" }, "查看来源"),
+              h("p", null, "上次读取 " + new Date(entry.checked).toLocaleString()),
+              entry.error && h("p", { className: "mwi-cloud-warning" }, entry.error),
+              details,
+              h("div", { className: "mwi-virtual-actions" },
+                board && btn("检查更新", () => this.run(async () => { await app.Virtual.refresh(owner, entry); await reload(); })),
+                btn(board ? "取消订阅" : "移除虚拟配装", () => this.setState({ removing: true }))),
+              this.state.removing && h("div", null,
+                h("p", null, board ? "取消这项订阅并移除本机缓存？" : "移除这份本地虚拟配装？"),
+                btn("确认移除", () => this.run(async () => { await app.Virtual.remove(owner, entry); await reload(); })),
+                btn("保留", () => this.setState({ removing: false }))),
+              h("p", { role: "status" }, this.state.notice))));
       }
     }
     class Snapshot extends React.Component {
@@ -1898,10 +1981,15 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         const empty = { ...raw, wearableMap: {}, abilityMap: {}, foodItemHrids: [], drinkItemHrids: [],
           abilityCombatTriggersMap: {}, consumableCombatTriggersMap: {} };
         const changes = app.Core.diff(empty, snapshot);
-        return h("dl", { className: "mwi-virtual-items" },
-          h("dt", null, "强化选择"), h("dd", null, app.Adapter.describe({ props: nativeProps }, { kind: "setting" }, raw.useExactEnhancement)),
+        const text = h("dl", { className: "mwi-virtual-items" },
           changes.map((change, i) => h(React.Fragment, { key: i },
             h("dt", null, change.label), h("dd", null, app.Adapter.describe({ props: nativeProps }, change, change.to)))));
+        return h("div", null,
+          h("div", { className: "mwi-virtual-options", "aria-label": "配装选项（只读）" },
+            [["默认", raw.isDefault], ["缺失不提醒", raw.suppressValidation], ["最高强化", !raw.useExactEnhancement]].map(([label, checked]) =>
+              h("label", { key: label }, h("input", { type: "checkbox", checked: Boolean(checked), disabled: true }), label))),
+          NativePreview && h(NativePreview, { snapshot, nativeProps }),
+          h("details", null, h("summary", null, "文字与触发条件"), text));
       }
     }
     return class VirtualPanel extends React.Component {
@@ -1961,7 +2049,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
           this.state.loading ? h("p", null, "读取中…") :
             !this.state.entries.length && h("p", null, "暂无虚拟配装"),
           h("div", { className: "mwi-virtual-grid" }, this.state.entries.map(entry =>
-            h(Entry, { key: entry.token, entry, owner: this.props.owner, nativeProps: this.props.nativeProps, reload: this.reload }))));
+            h(Entry, { key: entry.token, entry, owner: this.props.owner, nativeProps: this.props.nativeProps, nativeIcons: this.props.nativeIcons, reload: this.reload }))));
       }
     };
   };
@@ -1971,7 +2059,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
 (function (root) {
   "use strict";
   const app = root.MWILoadoutScenes;
-  const css = "[data-mwi-loadout-overview] {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));\n  align-items: start;\n  gap: .75rem;\n  text-align: start;\n}\n.mwi-overview-card {\n  container-type: inline-size;\n  min-width: 0;\n  border: 1px solid var(--color-divider, #4c5677);\n  border-radius: var(--radius-sm, 8px);\n  background: var(--color-midnight-700, #202333);\n  color: var(--color-text-dark-mode, #f1f2fa);\n}\n.mwi-overview-card-head {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: .25rem .5rem;\n  min-height: 2.75rem;\n  padding: .35rem .625rem;\n  background: var(--color-midnight-500, #2b3045);\n  border-block-end: 1px solid var(--color-divider, #4c5677);\n  border-start-start-radius: inherit;\n  border-start-end-radius: inherit;\n}\n.mwi-overview-card-head h3 {\n  display: flex;\n  align-items: center;\n  flex: 1 1 6rem;\n  min-width: 0;\n  margin: 0;\n  font-size: 1rem;\n  font-weight: 600;\n  overflow-wrap: anywhere;\n}\n.mwi-overview-options {\n  display: flex;\n  align-items: center;\n  gap: .25rem .625rem;\n  padding: .125rem .625rem 0;\n  white-space: nowrap;\n}\n.mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { margin: 0; min-height: 2rem; }\n.mwi-overview-options [class*=\"MuiTypography-root\"] { font-size: .8rem; }\n.mwi-overview-button {\n  color: var(--color-text-dark-mode, #f1f2fa);\n  background: var(--color-midnight-500, #2b3045);\n  border: 1px solid var(--color-space-300, #7d87b0);\n  border-radius: var(--radius-sm, 5px);\n  font: inherit;\n  font-size: .82rem;\n  padding: .3rem .55rem;\n  min-height: 2rem;\n  cursor: pointer;\n}\n.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }\n.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }\n.mwi-overview-toolbar { display: flex; flex-wrap: wrap; gap: .375rem; }\n.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] { min-width: 0; width: 100%; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));\n  width: 100%;\n  box-sizing: border-box;\n  padding: .625rem;\n  gap: .625rem;\n  background: transparent;\n}\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_playerModel__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_abilities__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }\n.mwi-overview-has-requirement { position: relative; }\n.mwi-overview-requirement {\n  position: absolute;\n  inset: .125rem .1875rem auto auto;\n  z-index: 1;\n  color: #ffc268;\n  font-size: .8125rem;\n  font-variant-numeric: tabular-nums;\n  font-weight: 600;\n  line-height: 1;\n  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;\n  pointer-events: none;\n}\n@media (pointer: coarse) {\n  .mwi-overview-button { min-height: 2.75rem; }\n  .mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { min-height: 2.75rem; }\n}\n\n.mwi-overview-cloud { color: #c3c6db; font-size: .78rem; line-height: 1.4; }\n.mwi-overview-card-head .mwi-overview-cloud { flex: 0 0 100%; }\n.mwi-overview-cloud.mwi-cloud-warning { color: #ffd27a; }\n\n.mwi-virtual-panel { margin-block: 1.25rem; text-align: start; color: #eeeef5; }\n.mwi-virtual-panel h2 { font-size: 1.1rem; }\n.mwi-virtual-panel p { font-size: .85rem; color: #c3c6db; margin: .4rem 0; }\n.mwi-virtual-panel form, .mwi-virtual-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }\n.mwi-virtual-panel input, .mwi-virtual-panel select { background: #171822; color: #eeeef5; border: 1px solid #7d87b0; border-radius: 5px; padding: .5rem; min-width: 0; max-width: 100%; font: inherit; }\n.mwi-virtual-panel form input { flex: 1 1 16rem; }\n.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }\n.mwi-virtual-card { padding: .8rem; background: #202333; border: 1px solid #4c5677; border-radius: 8px; overflow-wrap: anywhere; min-width: 0; }\n.mwi-virtual-card h3 { font-size: 1rem; margin: 0 0 .5rem; }\n.mwi-virtual-card a { color: #bbcaff; }\n.mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }\n.mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }\n.mwi-virtual-items { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .4rem .7rem; font-size: .85rem; }\n.mwi-virtual-items dd { margin: 0; white-space: pre-wrap; }\n.mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }\n.mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }\n";
+  const css = "[data-mwi-loadout-overview] {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));\n  align-items: start;\n  gap: .75rem;\n  text-align: start;\n}\n.mwi-overview-card {\n  container-type: inline-size;\n  min-width: 0;\n  border: 1px solid var(--color-divider, #4c5677);\n  border-radius: var(--radius-sm, 8px);\n  background: var(--color-midnight-700, #202333);\n  color: var(--color-text-dark-mode, #f1f2fa);\n}\n.mwi-overview-card-head {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: .25rem .5rem;\n  min-height: 2.75rem;\n  padding: .35rem .625rem;\n  background: var(--color-midnight-500, #2b3045);\n  border-block-end: 1px solid var(--color-divider, #4c5677);\n  border-start-start-radius: inherit;\n  border-start-end-radius: inherit;\n}\n.mwi-overview-card-head h3 {\n  display: flex;\n  align-items: center;\n  flex: 1 1 6rem;\n  min-width: 0;\n  margin: 0;\n  font-size: 1rem;\n  font-weight: 600;\n  overflow-wrap: anywhere;\n}\n.mwi-overview-options {\n  display: flex;\n  align-items: center;\n  gap: .25rem .625rem;\n  padding: .125rem .625rem 0;\n  white-space: nowrap;\n}\n.mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { margin: 0; min-height: 2rem; }\n.mwi-overview-options [class*=\"MuiTypography-root\"] { font-size: .8rem; }\n.mwi-overview-button {\n  color: var(--color-text-dark-mode, #f1f2fa);\n  background: var(--color-midnight-500, #2b3045);\n  border: 1px solid var(--color-space-300, #7d87b0);\n  border-radius: var(--radius-sm, 5px);\n  font: inherit;\n  font-size: .82rem;\n  padding: .3rem .55rem;\n  min-height: 2rem;\n  cursor: pointer;\n}\n.mwi-overview-button:hover { background: var(--color-midnight-300, #394464); }\n.mwi-overview-button:focus-visible { outline: 2px solid #9ecfff; outline-offset: 2px; }\n.mwi-overview-toolbar { display: flex; flex-wrap: wrap; gap: .375rem; }\n.mwi-overview-notice { padding: .5rem .625rem; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] { min-width: 0; width: 100%; margin: 0; }\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_details__\"] [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 2.25rem) / 5)));\n  width: 100%;\n  box-sizing: border-box;\n  padding: .625rem;\n  gap: .625rem;\n  background: transparent;\n}\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_playerModel__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_abilities__\"],\n[data-mwi-loadout-overview] .mwi-overview-card [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-overview-tools { grid-area: 5 / 1 / span 1 / -1; margin-block-start: .25rem; }\n.mwi-overview-has-requirement { position: relative; }\n.mwi-overview-requirement {\n  position: absolute;\n  inset: .125rem .1875rem auto auto;\n  z-index: 1;\n  color: #ffc268;\n  font-size: .8125rem;\n  font-variant-numeric: tabular-nums;\n  font-weight: 600;\n  line-height: 1;\n  text-shadow: 0 0 2px #171822, 0 1px 2px #171822;\n  pointer-events: none;\n}\n@media (pointer: coarse) {\n  .mwi-overview-button { min-height: 2.75rem; }\n  .mwi-overview-options [class*=\"MuiFormControlLabel-root\"] { min-height: 2.75rem; }\n}\n\n.mwi-overview-cloud { color: #c3c6db; font-size: .78rem; line-height: 1.4; }\n.mwi-overview-card-head .mwi-overview-cloud { flex: 0 0 100%; }\n.mwi-overview-cloud.mwi-cloud-warning { color: #ffd27a; }\n\n.mwi-virtual-panel { margin-block: 1.25rem; text-align: start; color: #eeeef5; }\n.mwi-virtual-panel h2 { font-size: 1.1rem; }\n.mwi-virtual-panel p { font-size: .85rem; color: #c3c6db; margin: .4rem 0; }\n.mwi-virtual-panel form, .mwi-virtual-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }\n.mwi-virtual-panel input, .mwi-virtual-panel select { background: #171822; color: #eeeef5; border: 1px solid #7d87b0; border-radius: 5px; padding: .5rem; min-width: 0; max-width: 100%; font: inherit; }\n.mwi-virtual-panel form input { flex: 1 1 16rem; }\n.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }\n.mwi-virtual-card { padding: 0; overflow-wrap: anywhere; min-width: 0; }\n.mwi-virtual-card h3 { font-size: 1rem; margin: 0; }\n.mwi-virtual-body { padding: .5rem .625rem; }\n.mwi-virtual-management { border-top: 1px solid #4c5677; margin-top: .5rem; padding-top: .5rem; }\n.mwi-virtual-card .mwi-virtual-options { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .85rem; }\n.mwi-virtual-card .mwi-virtual-options label { display: flex; align-items: center; gap: .2rem; margin: 0; }\n.mwi-virtual-card .mwi-virtual-options input { margin: 0; accent-color: #bdc7ed; }\n.mwi-virtual-card a { color: #bbcaff; }\n.mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }\n.mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }\n.mwi-virtual-items { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .4rem .7rem; font-size: .85rem; }\n.mwi-virtual-items dd { margin: 0; white-space: pre-wrap; }\n.mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }\n.mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }\n\n.mwi-virtual-native { container-type: inline-size; margin-block: .5rem; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_selectedLoadout__\"] { padding: 0; align-items: stretch; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_details__\"] { width: 100%; min-width: 0; margin: 0; }\n.mwi-virtual-native [class*=\"LoadoutsPanel_setup__\"] {\n  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 1.5rem) / 5)));\n  width: 100%; min-width: 0; box-sizing: border-box; padding: .5rem;\n  gap: .75rem; background: transparent;\n}\n.mwi-virtual-native [class*=\"LoadoutsPanel_playerModel__\"],\n.mwi-virtual-native [class*=\"LoadoutsPanel_abilities__\"],\n.mwi-virtual-native [class*=\"LoadoutsPanel_consumables__\"] { gap: .25rem; }\n.mwi-virtual-slot { min-width: 0; width: fit-content; max-width: 100%; border-radius: 5px; }\n.mwi-virtual-slot [inert] { pointer-events: none; }\n.mwi-virtual-trigger { position: relative; }\n.mwi-virtual-trigger summary { list-style: none; text-align: center; font-size: 1.4rem; line-height: 1.2; padding: .1rem 0; color: #90c9fa; }\n.mwi-virtual-trigger summary::-webkit-details-marker { display: none; }\n.mwi-virtual-trigger p { position: absolute; z-index: 3; width: 15rem; max-width: 75vw; padding: .6rem; white-space: pre-wrap; background: #171822; border: 1px solid #7d87b0; border-radius: 5px; box-shadow: 0 4px 12px #0008; }\n.mwi-virtual-native [class*=\"Item_count__\"],\n.mwi-virtual-native [class*=\"Ability_level__\"],\n.mwi-virtual-native [class*=\"CombatTriggersSetting_combatTriggersSetting__\"] { display: none; }\n";
   const marker = "data-mwi-loadout-overview";
   const collapseKey = owner => `mwi-layu:loadout-overview:collapsed:v1:${owner}`;
   const installed = new WeakMap();
@@ -2174,7 +2262,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
     const render = controller.render;
     const CloudLabel = makeCloudLabel(React);
-    const VirtualPanel = app.makeVirtualPanel?.(React);
+    const VirtualPanel = app.makeVirtualPanel?.(React, app.makeVirtualPreview?.(React, controller.constructor));
     const Card = makeCard(React, controller.constructor, CloudLabel);
     const mounted = { panel, requirements: readRequirements(codec) };
     let collapsed = new Set(), collapsedOwner, collapseSaveFailed = false;
@@ -2267,7 +2355,8 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         showGrid && collapseSaveFailed && h("span", { role: "status" }, "折叠状态未能保存，刷新后可能恢复之前的状态。"));
       const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toolbar,
         showGrid ? h("div", { key: "mwi-overview-grid", [marker]: "" }, cards) : entry]);
-      if (VirtualPanel) mainChildren.push(h(VirtualPanel, { key: "virtual-" + owner, owner, nativeProps: props }));
+      if (VirtualPanel) mainChildren.push(h(VirtualPanel, { key: "virtual-" + owner, owner, nativeProps: props,
+        nativeIcons: Object.fromEntries(rows.map(row => [props.characterLoadoutDict[row.props["data-loadout-id"]].actionTypeHrid || "", children(React, row)[1]])) }));
       const updatedMain = React.cloneElement(main, null, mainChildren);
       return React.cloneElement(native, null, children(React, native)
         .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));

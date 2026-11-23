@@ -101,9 +101,14 @@
 .mwi-virtual-panel form, .mwi-virtual-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
 .mwi-virtual-panel input, .mwi-virtual-panel select { background: #171822; color: #eeeef5; border: 1px solid #7d87b0; border-radius: 5px; padding: .5rem; min-width: 0; max-width: 100%; font: inherit; }
 .mwi-virtual-panel form input { flex: 1 1 16rem; }
-.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }
-.mwi-virtual-card { padding: .8rem; background: #202333; border: 1px solid #4c5677; border-radius: 8px; overflow-wrap: anywhere; min-width: 0; }
-.mwi-virtual-card h3 { font-size: 1rem; margin: 0 0 .5rem; }
+.mwi-virtual-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: .75rem; align-items: start; }
+.mwi-virtual-card { padding: 0; overflow-wrap: anywhere; min-width: 0; }
+.mwi-virtual-card h3 { font-size: 1rem; margin: 0; }
+.mwi-virtual-body { padding: .5rem .625rem; }
+.mwi-virtual-management { border-top: 1px solid #4c5677; margin-top: .5rem; padding-top: .5rem; }
+.mwi-virtual-card .mwi-virtual-options { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .85rem; }
+.mwi-virtual-card .mwi-virtual-options label { display: flex; align-items: center; gap: .2rem; margin: 0; }
+.mwi-virtual-card .mwi-virtual-options input { margin: 0; accent-color: #bdc7ed; }
 .mwi-virtual-card a { color: #bbcaff; }
 .mwi-virtual-card label { display: grid; gap: .3rem; margin: .6rem 0; }
 .mwi-virtual-card summary { cursor: pointer; padding: .5rem 0; }
@@ -111,3 +116,24 @@
 .mwi-virtual-items dd { margin: 0; white-space: pre-wrap; }
 .mwi-virtual-panel .mwi-cloud-warning { color: #ffd27a; }
 .mwi-virtual-panel :focus-visible { outline: 2px solid #bbcaff; outline-offset: 2px; }
+
+.mwi-virtual-native { container-type: inline-size; margin-block: .5rem; }
+.mwi-virtual-native [class*="LoadoutsPanel_selectedLoadout__"] { padding: 0; align-items: stretch; }
+.mwi-virtual-native [class*="LoadoutsPanel_details__"] { width: 100%; min-width: 0; margin: 0; }
+.mwi-virtual-native [class*="LoadoutsPanel_setup__"] {
+  --item-size-normal: min(3.75rem, max(1px, calc((100cqi - 1.5rem) / 5)));
+  width: 100%; min-width: 0; box-sizing: border-box; padding: .5rem;
+  gap: .75rem; background: transparent;
+}
+.mwi-virtual-native [class*="LoadoutsPanel_playerModel__"],
+.mwi-virtual-native [class*="LoadoutsPanel_abilities__"],
+.mwi-virtual-native [class*="LoadoutsPanel_consumables__"] { gap: .25rem; }
+.mwi-virtual-slot { min-width: 0; width: fit-content; max-width: 100%; border-radius: 5px; }
+.mwi-virtual-slot [inert] { pointer-events: none; }
+.mwi-virtual-trigger { position: relative; }
+.mwi-virtual-trigger summary { list-style: none; text-align: center; font-size: 1.4rem; line-height: 1.2; padding: .1rem 0; color: #90c9fa; }
+.mwi-virtual-trigger summary::-webkit-details-marker { display: none; }
+.mwi-virtual-trigger p { position: absolute; z-index: 3; width: 15rem; max-width: 75vw; padding: .6rem; white-space: pre-wrap; background: #171822; border: 1px solid #7d87b0; border-radius: 5px; box-shadow: 0 4px 12px #0008; }
+.mwi-virtual-native [class*="Item_count__"],
+.mwi-virtual-native [class*="Ability_level__"],
+.mwi-virtual-native [class*="CombatTriggersSetting_combatTriggersSetting__"] { display: none; }

@@ -32,7 +32,7 @@ ${usageBuild.metadata}// @grant        GM_addElement
 // @license      MIT
 // ==/UserScript==
 `;
-const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memory.js", "cloud_sync.js", "cloud_ui.js", "virtual_loadouts.js", "virtual_ui.js", "overview.js", "app.js"].map(name => {
+const body = ["scene_core.js", "game_adapter.js", "scene_store.js", "action_memory.js", "cloud_sync.js", "cloud_ui.js", "virtual_loadouts.js", "virtual_preview.js", "virtual_ui.js", "overview.js", "app.js"].map(name => {
   let source = read(name);
   if (name === "overview.js") source = source.replace('"__OVERVIEW_CSS__"', () => JSON.stringify(read("overview.css")));
   if (name === "app.js") source = source.replace('"__SCENE_CSS__"', () => JSON.stringify(read("scene.css")));

@@ -204,7 +204,7 @@
         typeof controller.renderMainView !== "function" || typeof controller.forceUpdate !== "function") return;
     const render = controller.render;
     const CloudLabel = makeCloudLabel(React);
-    const VirtualPanel = app.makeVirtualPanel?.(React);
+    const VirtualPanel = app.makeVirtualPanel?.(React, app.makeVirtualPreview?.(React, controller.constructor));
     const Card = makeCard(React, controller.constructor, CloudLabel);
     const mounted = { panel, requirements: readRequirements(codec) };
     let collapsed = new Set(), collapsedOwner, collapseSaveFailed = false;
@@ -297,7 +297,8 @@
         showGrid && collapseSaveFailed && h("span", { role: "status" }, "折叠状态未能保存，刷新后可能恢复之前的状态。"));
       const mainChildren = children(React, main).flatMap(entry => !hasClass(entry, "characterLoadouts") ? [entry] : [toolbar,
         showGrid ? h("div", { key: "mwi-overview-grid", [marker]: "" }, cards) : entry]);
-      if (VirtualPanel) mainChildren.push(h(VirtualPanel, { key: "virtual-" + owner, owner, nativeProps: props }));
+      if (VirtualPanel) mainChildren.push(h(VirtualPanel, { key: "virtual-" + owner, owner, nativeProps: props,
+        nativeIcons: Object.fromEntries(rows.map(row => [props.characterLoadoutDict[row.props["data-loadout-id"]].actionTypeHrid || "", children(React, row)[1]])) }));
       const updatedMain = React.cloneElement(main, null, mainChildren);
       return React.cloneElement(native, null, children(React, native)
         .map(entry => hasClass(entry, "mainView") ? updatedMain : entry));

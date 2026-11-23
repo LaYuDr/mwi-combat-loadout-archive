@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.11] - 2026-11-23
+
+### Changed
+
+- 虚拟配装与订阅新增原生图标槽位预览，保留完整文字与触发条件；按用户要求跳过测试，仅构建并核验发布产物。
+
 ## [0.2.10] - 2026-11-23
 
 ### Changed
