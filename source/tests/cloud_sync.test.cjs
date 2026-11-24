@@ -332,3 +332,24 @@ test("scheduled native sync detects edits and requires explicit choice for a dif
   assert.equal(JSON.parse(boards.get("71loadout12")).native.snapshot.raw.name,raw.name);
   assert.equal(cloud.info(71,12).label,"配装已同步");
 });
+
+test("observeNative marks edits pending immediately and coalesces consecutive edits before uploading", async () => {
+  const {ctx,advance,boards,cloud,requests} = scheduledDevice(), app = ctx.MWILoadoutScenes;
+  let raw = {...row("unused",12).snapshot.raw,name:"初始配装"};
+  app.Adapter.nativeSnapshot = (character,id) => Core.snapshot({...raw,id});
+  app.Adapter.cloudContext = () => ({character:71,loadoutIds:[12],loadouts:{12:raw}});
+  ctx.__mwiLoadoutClipboardV2.protocolVersion = 3;
+  cloud.start(()=>{}); await advance(1000);
+  const requestsBefore = requests.length;
+  raw = {...raw,name:"改动1"};
+  cloud.observeNative(71,12,raw);
+  assert.equal(cloud.info(71,12).kind,"pending");
+  await advance(1800);
+  assert.equal(requests.length,requestsBefore);
+  raw = {...raw,name:"改动2"};
+  cloud.observeNative(71,12,raw);
+  await advance(4000);
+  assert.ok(requests.length > requestsBefore);
+  assert.equal(JSON.parse(boards.get("71loadout12")).native.snapshot.raw.name,"改动2");
+  assert.equal(cloud.info(71,12).label,"配装已同步");
+});

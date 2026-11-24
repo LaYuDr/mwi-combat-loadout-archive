@@ -133,7 +133,7 @@
   }
 
   const activeInterval = 30000, otherInterval = 300000;
-  const boards = new Map(), urgent = new Set(), routine = new Set();
+  const boards = new Map(), urgent = new Set(), routine = new Set(), nativeTimers = new Map();
   let timer, running = null, active = null, refreshScope, onStatus;
   const watchers = new Map();
   function subscribe(character, id, listener) {
@@ -174,6 +174,26 @@
     report(b, online() ? "已存本机，待上传" : "已存本机，等待联网", "pending");
     enqueue(b, true);
   }
+  function observeNative(character, loadoutId, raw) {
+    if (!Number.isSafeInteger(character) || character <= 0 || !Number.isSafeInteger(loadoutId) || loadoutId <= 0 || !raw) return;
+    const b = board(character, loadoutId);
+    if (b.lastRawRef === raw) return;
+    b.lastRawRef = raw;
+    let key;
+    try { key = app.Core.stable(raw); } catch (_) { return; }
+    if (b.observedNative == null) { b.observedNative = key; return; }
+    if (key === b.observedNative) return;
+    b.observedNative = key;
+    b.dirty = true;
+    if (b.kind === "blocked" || b.kind === "setup") return;
+    report(b, online() ? "已存本机，待上传" : "已存本机，等待联网", "pending");
+    const name = boardName(character, loadoutId);
+    clearTimeout(nativeTimers.get(name));
+    nativeTimers.set(name, setTimeout(() => {
+      nativeTimers.delete(name);
+      if (b.dirty && b.kind !== "blocked" && b.kind !== "setup") enqueue(b, true);
+    }, 1500));
+  }
   function request(character, loadoutId) {
     const b = board(character, loadoutId);
     if (running !== b && online()) enqueue(b, true);
@@ -186,7 +206,7 @@
   function setActive(character, loadoutId) {
     active = character == null ? null : board(character, loadoutId);
     if (active && active.kind !== "blocked" && active.kind !== "setup" && !active.retryAt && (active.last === null || Date.now() - active.last >= activeInterval)) {
-      request(character, loadoutId);
+      enqueue(active, true);
     }
   }
   async function drain() {
@@ -224,10 +244,12 @@
   }
   function start(refresh, statusChanged) {
     refreshScope = refresh; onStatus = statusChanged;
-    let poll;
-    function scan() {
+    let poll, scanning = false;
+    async function scan() {
+      if (scanning) return;
       clearTimeout(poll);
       if (document.hidden || !online()) return;
+      scanning = true;
       let delay = activeInterval;
       try {
         const ctx = app.Adapter.cloudContext();
@@ -249,7 +271,7 @@
           }
         }
       } catch (_) { delay = 3000; }
-      finally { poll = setTimeout(scan, delay); }
+      finally { scanning = false; poll = setTimeout(scan, delay); }
     }
     function resume() {
       if (urgent.size || !document.hidden && routine.size) kick();
@@ -283,6 +305,6 @@
       memoryCount: b.memoryCount, conflicts: b.conflicts, offline: !online(),
       warning: Boolean(b.nativeMismatch || b.conflicts || b.kind === "setup" || b.kind === "blocked" || b.kind === "error" || (!online() && b.dirty)) };
   }
-  app.Cloud = Object.freeze({ subscribe, info, conflictPairs, changed, request, publishCurrent, setActive, start, synchronize, boardName, parse, mergeScenes,
+  app.Cloud = Object.freeze({ subscribe, info, conflictPairs, changed, observeNative, request, publishCurrent, setActive, start, synchronize, boardName, parse, mergeScenes,
     status: (character, loadoutId) => boards.get(boardName(character, loadoutId))?.status || "等待同步" });
 })(globalThis);

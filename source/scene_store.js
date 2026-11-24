@@ -2,6 +2,16 @@
   "use strict";
   const app = root.MWILoadoutScenes = root.MWILoadoutScenes || {};
   let opening;
+  const listeners = new Set();
+  function subscribe(fn) {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  }
+  function notifyLocal(scope) {
+    for (const fn of listeners) {
+      try { fn(scope); } catch (_) { /* Listener errors must not affect storage commits. */ }
+    }
+  }
   function open() {
     if (opening) return opening;
     opening = new Promise((resolve, reject) => {
@@ -30,7 +40,10 @@
         try { result = work(request.result, store); }
         catch (e) { error = e; tx.abort(); }
       };
-      tx.oncomplete = () => resolve(result);
+      tx.oncomplete = () => {
+        if (mode === "readwrite") notifyLocal(scope);
+        resolve(result);
+      };
       tx.onabort = tx.onerror = () => reject(error || Error("子方案未能保存，原有记录保持不变；请检查存储空间后重试。"));
     });
   }
@@ -140,7 +153,24 @@
       return { scenes, changed: [...changed] };
     });
   }
-  app.Store = Object.freeze({ resolveConflict, mergeCloud, list: scope => transaction(scope, "readonly", rows => rows), create, mutate, importBackup,
+  async function counts(owner) {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("scenes", "readonly"), store = tx.objectStore("scenes");
+      const request = store.getAll();
+      const result = new Map();
+      request.onsuccess = () => {
+        for (const row of request.result) {
+          if (row.owner === owner && !row.removedAt) {
+            result.set(row.parentId, (result.get(row.parentId) || 0) + 1);
+          }
+        }
+      };
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = tx.onerror = () => reject(Error("无法读取子方案数量。"));
+    });
+  }
+  app.Store = Object.freeze({ resolveConflict, mergeCloud, counts, subscribe, list: scope => transaction(scope, "readonly", rows => rows), create, mutate, importBackup,
     exportBackup: (ctx, rows) => JSON.stringify({ format: "mwi-layu-loadout-scenes", schemaVersion: 1, scope: ctx.scope,
       scenes: rows.filter(row => !row.removedAt).map(({ name, snapshot }) => ({ name, snapshot })) }, null, 2) });
 })(globalThis);

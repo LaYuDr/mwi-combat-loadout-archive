@@ -89,6 +89,187 @@
     if (!object(value) || value.schemaVersion !== 1) throw Error("子方案版本无法识别，请使用兼容版本。");
     return snapshot(value.raw);
   }
+  function parseImport(text) {
+    if (typeof text !== "string" || text.length > 5000000) throw Error("配装内容超过 5 MB，未导入。");
+    let data;
+    try { data = JSON.parse(text); } catch (_) { throw Error("配装内容不是有效 JSON，请重新粘贴或选择文件。"); }
+    const modern = (players, prefix = "", title = "") => {
+      if (!Array.isArray(players) || !players.length || players.length > 5 || players.some(player => !object(player)))
+        throw Error("角色列表需要包含 1–5 个有效角色。");
+      return players.map((player, index) => ({ key: `${prefix}${index + 1}`,
+        label: `${title}${String(player.name || `角色 ${index + 1}`).slice(0, 60)} · ${index + 1}`, player }));
+    };
+    if (data?.format === "mwi-vue-solo" && data.version === 2 && object(data.player))
+      return [{ key: "solo", label: "当前角色", player: data.player }];
+    if (data?.version === 2 && data.format === "mwi-vue-group") return modern(data.players);
+    if (data?.schemaVersion === 1 && data.kind === "combat-party-builds") {
+      if (!Array.isArray(data.builds) || !data.builds.length || data.builds.length > 100)
+        throw Error("整队方案文件需要包含 1–100 个方案。");
+      return data.builds.flatMap((build, index) => {
+        if (!object(build)) throw Error("整队方案结构不完整。");
+        return modern(build.players, `build-${index + 1}:`, `${String(build.name || `方案 ${index + 1}`).slice(0, 60)} / `);
+      });
+    }
+    // mwisim full simulation exports carry players together with results and targets.
+    if (object(data) && Array.isArray(data.players) && Array.isArray(data.rows) &&
+        Array.isArray(data.targets) && object(data.simulationSettings)) return modern(data.players);
+    if (object(data?.levels) && object(data.equipment) && Array.isArray(data.abilities)) return modern([data]);
+    const legacy = (value, key) => {
+      if (typeof value === "string") {
+        try { value = JSON.parse(value); } catch (_) { throw Error(`角色 ${key} 的内容不是有效 JSON。`); }
+      }
+      if (!object(value?.player) || !Array.isArray(value.player.equipment) || value.player.equipment.length > 24)
+        throw Error(`角色 ${key} 的装备格式无法识别。`);
+      const equipment = {};
+      for (const gear of value.player.equipment) {
+        if (!object(gear) || !hrid(gear.itemLocationHrid, "item_locations")) throw Error(`角色 ${key} 的装备槽位无法识别。`);
+        const slot = gear.itemLocationHrid.split("/").pop();
+        if ((!Object.hasOwn(EQUIPMENT, slot) && slot !== "two_hand") || Object.hasOwn(equipment, slot))
+          throw Error(`角色 ${key} 的装备槽位未知或重复。`);
+        equipment[slot] = { itemHrid: gear.itemHrid, enhancementLevel: gear.enhancementLevel };
+      }
+      const consumables = kind => {
+        const slots = value[kind]?.["/action_types/combat"];
+        if (!Array.isArray(slots) || slots.length > 3) throw Error(`角色 ${key} 的战斗消耗品不完整。`);
+        return slots.map(slot => {
+          if (slot === null) return null;
+          if (!object(slot) || !(slot.itemHrid === "" || hrid(slot.itemHrid, "items"))) throw Error(`角色 ${key} 的消耗品无法识别。`);
+          return slot.itemHrid;
+        });
+      };
+      let abilities = value.abilities;
+      if (object(abilities)) {
+        const keys = Object.keys(abilities), start = Object.hasOwn(abilities, "0") ? 0 : 1;
+        if (![4, 5].includes(keys.length) || keys.some(key => !/^\d$/.test(key)) ||
+            !Array.from({ length: keys.length }, (_, index) => String(index + start)).every(key => Object.hasOwn(abilities, key)))
+          throw Error(`角色 ${key} 的技能槽位不完整。`);
+        abilities = Array.from({ length: keys.length }, (_, index) => abilities[index + start]);
+      }
+      if (Array.isArray(abilities) && abilities.length === 4) abilities = [null, ...abilities];
+      const nickname = typeof value.player.name === "string" ? value.player.name :
+        typeof value.player.characterName === "string" ? value.player.characterName : "";
+      return { key, label: nickname ? `${nickname.slice(0, 60)} · ${key}` : `角色 ${key}`, player: { name: nickname, equipment, abilities,
+        food: consumables("food"), drinks: consumables("drinks"), triggerMap: value.triggerMap } };
+    };
+    if (object(data?.player) && Array.isArray(data.player.equipment)) return [legacy(data, "1")];
+    const keys = object(data) ? Object.keys(data) : [];
+    if (!keys.length || keys.length > 5 || keys.some(key => !/^[1-5]$/.test(key)))
+      throw Error("无法识别配装格式，请选择单人配装或编号角色配装文件。");
+    return keys.sort().map(key => legacy(data[key], key));
+  }
+  function importChoices(text) {
+    return parseImport(text).map(({ key, label, player }) => ({ key, label,
+      nickname: typeof player.name === "string" ? player.name : "" }));
+  }
+  function matchImportNickname(choices, nickname) {
+    const normalize = value => typeof value === "string" ? value.trim().normalize("NFC") : "";
+    const name = normalize(nickname);
+    if (!name) return null;
+    const matches = choices.filter(choice => normalize(choice.nickname) === name);
+    return matches.length === 1 ? matches[0].key : null;
+  }
+  function importSolo(text, current, characterId, choice) {
+    const choices = parseImport(text);
+    const selected = choice ? choices.find(entry => entry.key === choice) : choices.length === 1 ? choices[0] : null;
+    if (!selected) throw Error("请选择要导入的角色。");
+    const raw = validate(current), player = selected.player;
+    if (raw.actionTypeHrid !== "/action_types/combat") throw Error("请先打开一套战斗配装，再导入为子方案。");
+    if (!Number.isSafeInteger(characterId) || characterId <= 0) throw Error("无法确认当前角色，未导入。");
+    // Copy only the active combat configuration, never simulation settings, identity or saved loadouts.
+    if (!object(player.equipment) ||
+        !Array.isArray(player.abilities) || player.abilities.length > 5 ||
+        !Array.isArray(player.food) || !Array.isArray(player.drinks) || !object(player.triggerMap))
+      throw Error("配装中的装备、技能、消耗品或触发条件不完整，未导入。");
+    raw.wearableMap = {};
+    const slots = new Set();
+    for (const [key, gear] of Object.entries(player.equipment)) {
+      // Scene comparison normalizes both one-handed and two-handed weapons to main_hand.
+      const slot = key === "weapon" || key === "two_hand" ? "main_hand" : key;
+      if (!Object.hasOwn(EQUIPMENT, slot) || slot.endsWith("_tool") || slots.has(slot))
+        throw Error("配装包含无法识别或重复的装备槽位，未导入。");
+      slots.add(slot);
+      if (gear === null) { raw.wearableMap[`/item_locations/${slot}`] = null; continue; }
+      if (!object(gear) || !(gear.itemHrid === "" || hrid(gear.itemHrid, "items")) ||
+          !Number.isSafeInteger(gear.enhancementLevel) || gear.enhancementLevel < 0 || gear.enhancementLevel > 1000)
+        throw Error(`“${EQUIPMENT[slot]}”的装备或强化等级无法识别，未导入。`);
+      raw.wearableMap[`/item_locations/${slot}`] = gear.itemHrid
+        ? `${characterId}::/item_locations/inventory::${gear.itemHrid}::${gear.enhancementLevel}` : null;
+    }
+    raw.useExactEnhancement = true;
+    raw.abilityMap = {};
+    player.abilities.forEach((ability, index) => {
+      if (ability !== null && (!object(ability) || !(ability.abilityHrid === "" || hrid(ability.abilityHrid, "abilities"))))
+        throw Error(`技能 ${index + 1} 无法识别，未导入。`);
+      raw.abilityMap[index + 1] = ability?.abilityHrid || null;
+    });
+    raw.foodItemHrids = copy(player.food);
+    raw.drinkItemHrids = copy(player.drinks);
+    raw.abilityCombatTriggersMap = {};
+    raw.consumableCombatTriggersMap = {};
+    // Only triggers for selected skills and consumables belong to this scene.
+    for (const id of Object.values(raw.abilityMap).filter(Boolean)) {
+      raw.abilityCombatTriggersMap[id] = Object.hasOwn(player.triggerMap, id) ? copy(player.triggerMap[id]) : [];
+    }
+    for (const id of [...raw.foodItemHrids, ...raw.drinkItemHrids].filter(Boolean)) {
+      if (!hrid(id, "items")) throw Error("消耗品槽位数据无法识别，未导入。");
+      raw.consumableCombatTriggersMap[id] = Object.hasOwn(player.triggerMap, id) ? copy(player.triggerMap[id]) : [];
+    }
+    return validate(raw);
+  }
+  function exportSimulator(source, title, target, props) {
+    const raw = validate(source);
+    if (raw.actionTypeHrid !== "/action_types/combat") throw Error("模拟器只支持导出战斗配装。");
+    if (!["shykai", "mwisim", "vue"].includes(target)) throw Error("请选择目标模拟器。");
+    const warnings = [], levels = {}, skillExperience = {};
+    for (const skill of ["stamina", "intelligence", "attack", "melee", "defense", "ranged", "magic"]) {
+      const entry = props?.characterSkillMap?.get?.(`/skills/${skill}`);
+      if (!Number.isFinite(entry?.level) || entry.level < 1) throw Error("无法完整读取当前角色等级，请刷新游戏后再导出。");
+      levels[skill] = Math.floor(entry.level);
+      skillExperience[skill] = Number.isFinite(entry.experience) && entry.experience >= 0 ? entry.experience : null;
+    }
+    const gear = equipment(raw), modernEquipment = {};
+    for (const [slot, value] of Object.entries(gear)) {
+      if (slot.endsWith("_tool")) continue;
+      if (value && value.enhancementLevel > 20) throw Error("模拟器不支持超过 +20 的装备，未导出。");
+      modernEquipment[slot === "main_hand" ? "weapon" : slot] = value || { itemHrid: "", enhancementLevel: 0 };
+    }
+    const triggerMap = {}, abilityLevels = {};
+    let unknownAbilities = 0;
+    const abilities = Array.from({ length: 5 }, (_, index) => {
+      const abilityHrid = raw.abilityMap[index + 1] || "";
+      const known = props?.characterAbilityMap?.get?.(abilityHrid)?.level;
+      const level = Number.isFinite(known) && known >= 1 ? Math.floor(known) : 1;
+      if (abilityHrid) {
+        if (!(Number.isFinite(known) && known >= 1)) unknownAbilities++;
+        abilityLevels[abilityHrid] = level;
+        triggerMap[abilityHrid] = copy(raw.abilityCombatTriggersMap?.[abilityHrid] || []);
+      }
+      return { abilityHrid, level };
+    });
+    const food = Array.from({ length: 3 }, (_, i) => raw.foodItemHrids[i] || "");
+    const drinks = Array.from({ length: 3 }, (_, i) => raw.drinkItemHrids[i] || "");
+    for (const id of [...food, ...drinks].filter(Boolean)) triggerMap[id] = copy(raw.consumableCombatTriggersMap?.[id] || []);
+    if (unknownAbilities) warnings.push(`${unknownAbilities} 个未读取到等级的技能按 1 级导出`);
+    if (!raw.useExactEnhancement) warnings.push("最高强化已转为快照内的具体等级");
+    if (gear.trinket) warnings.push("目标模拟器不支持的徽章槽可能被忽略");
+    warnings.push("角色等级取当前角色；房屋、公会增益、成就和模拟参数请在目标站核对");
+    const player = { id: "1", name: String(props?.characterInfo?.name || title), selected: true,
+      levels, skillExperience, equipment: modernEquipment, food, drinks, abilities, triggerMap,
+      abilityLevels, abilityLevelMap: abilityLevels, houseRooms: {}, guildBuffs: {}, achievements: {}, combatScrolls: {} };
+    let payload;
+    if (target === "shykai") {
+      const equipmentList = Object.entries(gear).filter(([, value]) => value).map(([slot, value]) => ({
+        itemLocationHrid: `/item_locations/${slot}`, ...value
+      }));
+      const legacySlots = values => ({ "/action_types/combat": values.map(itemHrid => itemHrid ? { itemHrid } : null) });
+      payload = { player: { ...Object.fromEntries(Object.entries(levels).map(([key, value]) => [key + "Level", value])), equipment: equipmentList },
+        food: legacySlots(food), drinks: legacySlots(drinks), abilities, triggerMap };
+    } else if (target === "mwisim") {
+      payload = { schemaVersion: 1, kind: "combat-party-builds", builds: [{ name: name(title),
+        players: [player], settings: {}, gameDataVersion: "loadout-assistant", savedAt: Date.now() }] };
+    } else payload = { version: 2, format: "mwi-vue-solo", simulationSettings: {}, player };
+    return { text: JSON.stringify(payload, null, 2), warnings };
+  }
   function equipment(raw) {
     const result = {}, combat = raw.actionTypeHrid === "/action_types/combat";
     const available = key => !combat || !key.endsWith("_tool");
@@ -128,6 +309,6 @@
     }
     return changes;
   }
-  app.Core = Object.freeze({ copy, stable, item, validate, name, snapshot, validateSnapshot, diff, EQUIPMENT });
+  app.Core = Object.freeze({ copy, stable, item, validate, name, snapshot, validateSnapshot, importChoices, matchImportNickname, importSolo, exportSimulator, diff, EQUIPMENT });
   if (typeof module !== "undefined" && module.exports) module.exports = app.Core;
 })(globalThis);

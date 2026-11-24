@@ -91,3 +91,25 @@ test("local virtual copies retain data and adoption rebinds parent ID without al
   await assert.rejects(V.adopt(71,scene,{...snapshot.raw,actionTypeHrid:"/action_types/combat"},"无效"),/同类型/);
   h.switch(72); await assert.rejects(V.adopt(71,scene,snapshot.raw,"无效"),/角色/);
 });
+test("virtual removal can be restored and backup export/import deduplicates local copies and subscriptions", async () => {
+  const h = harness(), V = h.app.Virtual;
+  h.set(doc([scene]));
+  const sub = await V.subscribe(71, "72loadout12");
+  const local = await V.save(71, "本地副本", snapshot);
+  const removed = await V.remove(71, local);
+  assert.equal(removed.key, local.key);
+  assert.equal((await V.list(71)).length, 1);
+  await V.restore(71, removed);
+  assert.equal((await V.list(71)).length, 2);
+  const backup = V.exportBackup(await V.list(71));
+  assert.deepEqual({ ...await V.importBackup(71, backup) }, { added: 0, skipped: 2 });
+  await V.remove(71, sub);
+  await V.remove(71, local);
+  assert.equal((await V.list(71)).length, 0);
+  assert.deepEqual({ ...await V.importBackup(71, backup) }, { added: 2, skipped: 0 });
+  const restored = await V.list(71);
+  assert.equal(restored.length, 2);
+  assert.ok(restored.some(r => r.board === "72loadout12"));
+  assert.ok(restored.some(r => !r.board && r.scenes[0].name === "本地副本"));
+  await assert.rejects(V.importBackup(71, JSON.stringify({ format: "unknown" })), /格式无法识别/);
+});

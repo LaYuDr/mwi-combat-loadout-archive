@@ -112,8 +112,24 @@ test("the overview reuses one native editor per loadout and renders its cache ba
   assert.deepEqual(Object.keys(h.webpack.m), []);
   assert.deepEqual(Object.keys(h.webpack.c), ["0", "1"]);
   assert.deepEqual(h.requests, []);
-  cards[0].props.openDetails();
-  assert.deepEqual(h.views, [12]);
+  cards[0].props.toggleScenes(first.element);
+  assert.deepEqual(h.views, []);
+  assert.equal(h.controller.state.selectedCharacterLoadoutId, null);
+  const opened = h.grid().props.children.flat()[0];
+  assert.equal(opened.props.nativeProps.overviewScenesOpen, true);
+  assert(h.find(h.mountCard(opened).slots.render(), node => Object.hasOwn(node?.props || {}, "data-mwi-overview-scenes")));
+  cards[1].props.toggleScenes(second.element);
+  const switched = h.grid().props.children.flat();
+  assert.equal(switched[0].props.nativeProps.overviewScenesOpen, false);
+  assert.equal(switched[1].props.nativeProps.overviewScenesOpen, true);
+  assert.equal(switched[1].props.nativeProps.overviewTab, "scenes");
+  cards[1].props.toggleScenes(second.element, "cloud");
+  const cloudSwitched = h.grid().props.children.flat();
+  assert.equal(cloudSwitched[1].props.nativeProps.overviewScenesOpen, true);
+  assert.equal(cloudSwitched[1].props.nativeProps.overviewTab, "cloud");
+  cards[1].props.toggleScenes(second.element, "cloud");
+  assert.equal(h.grid().props.children.flat()[1].props.nativeProps.overviewScenesOpen, false);
+  assert.deepEqual(h.requests, []);
 });
 
 test("native edits stay on their card and stale cards cannot write after deletion, character switch or unmount", () => {
@@ -233,7 +249,7 @@ test("the native list can be restored and a changed game tree falls back to the 
 test("loadout sync labels and warning tally update without rerendering the native overview", () => {
   const h = harness(), states = new Map(), listeners = new Map();
   h.app.Cloud = {
-    info: (_owner, id) => states.get(id) || { label: "等待同步", warning: false },
+    info: (_owner, id) => states.get(id) || { label: "等待同步", kind: "waiting", warning: false },
     subscribe(owner, id, fn) {
       assert.equal(owner, 71);
       if (!listeners.has(id)) listeners.set(id, new Set());
@@ -245,23 +261,54 @@ test("loadout sync labels and warning tally update without rerendering the nativ
   const grid = h.grid();
   function mount(node) {
     const cmp = new node.type(node.props);
-    const label = { textContent: "", classList: { toggle() {} } };
-    cmp.render().props.ref(label);
+    const label = { textContent: "", title: "", dataset: {}, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, classList: { toggle() {} } };
+    const text = { textContent: "", hidden: true };
+    const rendered = cmp.render();
+    rendered.props.ref(label);
+    const textNode = h.find(rendered, entry => entry?.props?.className === "mwi-overview-cloud-text");
+    textNode?.props?.ref?.(text);
     cmp.componentDidMount();
-    return { cmp, label };
+    return { cmp, label, text };
   }
   const labels = grid.props.children.flat().map(node => {
-    const {card} = h.mountCard(node);
+    const { card } = h.mountCard(node);
     return mount(h.find(card.render(), entry => entry?.props?.ids === String(node.props.id)));
   });
   const tally = mount(h.find(h.controller.output, entry => entry?.props?.tally));
   assert.ok(tally.label.hidden);
-  states.set(12, { label: "同步已暂停", warning: true });
+  assert.equal(labels[0].text.hidden, true);
+  assert.equal(labels[0].label.title, "云同步 · 等待同步");
+  states.set(12, { label: "同步已暂停", kind: "blocked", warning: true });
   listeners.get(12).forEach(fn => fn());
+  assert.equal(tally.label.hidden, false);
   assert.equal(tally.label.textContent, "1 套配装待处理");
-  assert.equal(labels[0].label.textContent, "云同步 · 同步已暂停");
-  assert.equal(labels[1].label.textContent, "云同步 · 等待同步");
+  assert.equal(labels[0].label.title, "云同步 · 同步已暂停");
+  assert.equal(labels[0].label.dataset.state, "warn");
+  assert.equal(labels[0].text.hidden, false);
+  assert.equal(labels[0].text.textContent, "同步暂停");
+  assert.equal(labels[1].text.hidden, true);
+  assert.equal(labels[1].label.title, "云同步 · 等待同步");
   assert.equal(h.grid(), grid);
-  for (const {cmp} of [...labels, tally]) cmp.componentWillUnmount();
+  for (const { cmp } of [...labels, tally]) cmp.componentWillUnmount();
   assert.equal(listeners.get(12).size, 0);
+});
+
+test("overview search and type filters narrow visible cards without mutating game loadouts", () => {
+  const h = harness();
+  h.controller.props.characterLoadoutDict[12].actionTypeHrid = "/action_types/combat";
+  h.controller.props.characterLoadoutDict[13].actionTypeHrid = "/action_types/enhancing";
+  h.controller.forceUpdate();
+  const search = () => h.find(h.controller.output, n => n?.key === "mwi-overview-search-input");
+  const filterBtn = label => h.find(h.controller.output, n => n?.type === "button" && n?.props?.children?.includes?.(label));
+  search().props.onChange({ target: { value: "甲" } });
+  assert.deepEqual(h.grid().props.children.flat().map(c => c.props.id), [12]);
+  search().props.onChange({ target: { value: "不存在" } });
+  assert.equal(h.grid(), undefined);
+  filterBtn("清除筛选").props.onClick();
+  assert.deepEqual(h.grid().props.children.flat().map(c => c.props.id), [12, 13]);
+  filterBtn("生活").props.onClick();
+  assert.deepEqual(h.grid().props.children.flat().map(c => c.props.id), [13]);
+  filterBtn("战斗").props.onClick();
+  assert.deepEqual(h.grid().props.children.flat().map(c => c.props.id), [12]);
+  assert.deepEqual(h.requests, []);
 });

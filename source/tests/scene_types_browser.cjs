@@ -23,7 +23,7 @@ module.exports = async function checkSceneTypes(browser, content, fixture, pass)
       await host.getByRole("button", { name: "新建子方案", exact: true }).click();
       await host.getByLabel("新子方案名称").fill("效率");
       await host.getByRole("button", { name: "保存", exact: true }).click();
-      await status.filter({ hasText: "已保存“效率”" }).waitFor();
+      await host.locator('.choices [data-scene-id][aria-pressed="true"]').filter({ hasText: "效率" }).waitFor();
       await summary.filter({ hasText: "配装已一致" }).waitFor();
       const row = await page.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope))[0]);
       assert.deepEqual(row.snapshot.raw, raw);
@@ -41,22 +41,25 @@ module.exports = async function checkSceneTypes(browser, content, fixture, pass)
       // A synthetic native tool picker belongs to exactly one changed slot.
       await page.evaluate(() => {
         const ctx = MWILoadoutScenes.Adapter.current(), slot = MWILoadoutScenes.Adapter.target(ctx, { kind: "equipment", slot: "enhancing_tool" });
+        const root = document.getElementById("root")._reactRootContainer.current, panelFiber = root.child.child, previous = panelFiber.child;
         const list = document.createElement("div"); list.id = "tool-picker"; list.className = "ItemSelector_itemList__fixture";
-        const fiber = { stateNode: list, return: { stateNode: slot } }; list.__reactFiber$fixture = fiber;
+        const ownerFiber = { stateNode: slot, return: panelFiber, sibling: previous };
+        const fiber = { stateNode: list, return: ownerFiber }; ownerFiber.child = fiber; panelFiber.child = ownerFiber;
+        window.closeToolPicker = () => { list.remove(); panelFiber.child = previous; };
         for (const [name, itemHrid, enhancementLevel] of [["wrong level", "/items/enhancing_tool", 7], ["target tool", "/items/enhancing_tool", 8], ["other tool", "/items/milking_tool", 8]]) {
           const choice = document.createElement("div"); choice.textContent = name;
           const child = { stateNode: choice, memoizedProps: { itemHrid, enhancementLevel }, return: fiber, sibling: fiber.child };
-          fiber.child = child; choice.__reactFiber$fixture = child; list.append(choice);
+          fiber.child = child; list.append(choice);
         }
         document.body.append(list);
       });
       await page.locator('#tool-picker [data-mwi-scene-target]').waitFor();
       assert.deepEqual(await page.locator('#tool-picker [data-mwi-scene-target]').allTextContents(), ["target tool"]);
-      await page.locator("#tool-picker").evaluate(node => node.remove());
+      await page.evaluate(() => closeToolPicker());
       // Updating retains the parent type and all raw fields, then survives a page reload.
-      await host.locator(".header").getByRole("button", { name: "更新", exact: true }).click();
+      await host.locator(".active-actions").getByRole("button", { name: "更新", exact: true }).click();
       await host.getByRole("button", { name: "更新方案", exact: true }).click();
-      await host.locator(".header").getByRole("button", { name: "更新", exact: true }).waitFor();
+      await host.locator(".active-actions").getByRole("button", { name: "更新", exact: true }).waitFor();
       await summary.filter({ hasText: "配装已一致" }).waitFor();
       assert.equal(await status.isVisible(), false);
       await page.reload(); await open(changed);

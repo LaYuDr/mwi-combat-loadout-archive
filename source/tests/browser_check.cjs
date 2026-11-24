@@ -67,14 +67,14 @@ async function main() {
           tx.objectStore("sentinels").put("keep-old-simulator", "existing"); tx.oncomplete = () => { db.close(); resolve(); }; }; });
     });
     async function action(name) {
-      if (name === "更新") { await host.locator(".header").getByRole("button", { name, exact: true }).click(); return; }
+      if (name === "更新") { await host.locator(".active-actions").getByRole("button", { name, exact: true }).click(); return; }
       await host.locator('.choices [data-scene-id][aria-pressed="true"]').click({ button: "right" });
       await host.locator("#scene-menu").getByRole("button", { name: name === "导出" ? "导出全部" : name, exact: true }).click();
     }
     async function save(name) {
       await host.getByRole("button", { name: "新建子方案", exact: true }).click();
       await host.getByLabel("新子方案名称").fill(name); await host.getByRole("button", { name: "保存", exact: true }).click();
-      await status.filter({ hasText: `已保存“${name}”` }).waitFor();
+      await host.locator('.choices [data-scene-id][aria-pressed="true"]').filter({ hasText: name }).waitFor();
     }
     async function manual(raw) {
       await page.getByRole("button", { name: "模拟玩家打开原生编辑器" }).click();
@@ -140,10 +140,47 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 4);
     await page.evaluate(() => closeFixturePickers());
     await page.waitForFunction(() => fixturePickers.every(list => !list.querySelector('[data-mwi-scene-target]')));
+    // Large picker (200 items with deep child trees) where target is at index 0
+    // and item props sit on a component wrapper ABOVE the choice DOM node.
+    await page.evaluate(() => {
+      const ctx = MWILoadoutScenes.Adapter.current(), root = document.getElementById('root')._reactRootContainer.current;
+      const panelFiber = root.child.child, previous = panelFiber.child;
+      const owner = MWILoadoutScenes.Adapter.target(ctx, { kind: 'equipment', slot: 'head' });
+      const ownerFiber = { stateNode: owner, memoizedProps: fixtureFibers.get(owner)?.memoizedProps, return: panelFiber, sibling: panelFiber.child };
+      panelFiber.child = ownerFiber;
+      const list = document.createElement('div');
+      list.className = 'ItemSelector_itemList__fixture';
+      const listFiber = { stateNode: list, return: ownerFiber }; ownerFiber.child = listFiber;
+      let prevSibling = null;
+      for (let i = 0; i < 200; i++) {
+        const cell = document.createElement('div');
+        cell.textContent = i === 0 ? 'top-head' : 'filler-' + i;
+        cell.style.cssText = 'display:inline-block;padding:4px';
+        // Deep 30-node subtree inside each choice simulates Tooltip/Icon/SVG fibers.
+        let deep = { memoizedProps: {} };
+        for (let d = 0; d < 30; d++) deep = { child: deep, memoizedProps: {} };
+        const cellFiber = { stateNode: cell, child: deep };
+        const wrapperProps = i === 0 ? { itemHrid: '/items/hood', enhancementLevel: 8 } : { itemHrid: '/items/filler_' + i, enhancementLevel: 0 };
+        const wrapperFiber = { memoizedProps: wrapperProps, child: cellFiber, return: listFiber };
+        cellFiber.return = wrapperFiber;
+        if (prevSibling) prevSibling.sibling = wrapperFiber;
+        else listFiber.child = wrapperFiber;
+        prevSibling = wrapperFiber;
+        list.append(cell);
+      }
+      document.body.append(list);
+      window.closeLargePicker = () => { list.remove(); panelFiber.child = previous; };
+    });
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 1);
+    assert.deepEqual(await page.locator('[data-mwi-scene-target]').allTextContents(), ['top-head']);
+    await page.evaluate(() => closeLargePicker());
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 0);
     pass('portal pickers highlight target skills, exact equipment, food and drinks in blue; ignore unrelated/empty targets and clear corrected food or closed pickers');
     const changes = await host.locator("li").count(); assert.ok(changes >= 6);
     assert.ok(await page.locator("[data-mwi-scene-change]").count() >= 5);
-    assert.equal(await host.locator("#scene-differences").getAttribute("open"), null);
+    assert.equal(await page.locator("[data-mwi-scene-comparing]").count(), 1);
+    assert.ok(await page.locator("[data-mwi-scene-slot-change]").count() >= 5);
+    assert.equal(await host.locator("#scene-differences").isVisible(), false);
     assert.equal(await page.locator("[data-mwi-scene-marker]").count(), 5);
     assert.equal(await page.locator("button [data-mwi-scene-marker]").count(), 0);
     assert.match(await page.locator("[data-mwi-scene-marker] .target-value").allTextContents().then(texts => texts.join("")), /远程兜帽/);
@@ -151,7 +188,7 @@ async function main() {
     const triggerMarker = page.locator("[data-mwi-scene-marker]").getByRole("button", { name: /^技能 1 · 触发条件/ });
     await triggerMarker.click();
     assert.equal(await page.evaluate(() => markerNativeClicks), 0);
-    assert.equal(await host.locator("#scene-differences").getAttribute("open"), "");
+    assert.equal(await host.locator("#scene-differences").isVisible(), true);
     assert.match(await host.locator("details[open] pre").first().textContent(), /"value": 0/);
     assert.match(await host.locator("li:focus").textContent(), /技能 1 · 触发条件/);
     // Replacing native nodes with identical data must restore markers, without duplicates.
@@ -173,7 +210,7 @@ async function main() {
       missingHead.remove();
     });
     await summary.filter({ hasText: '1 项未定位' }).waitFor();
-    assert.equal(await host.locator('#scene-differences').getAttribute('open'), '');
+    assert.equal(await host.locator('#scene-differences').isVisible(), true);
     assert.match(await host.locator('li').first().textContent(), /头部.*未定位.*远程兜帽/s);
     await page.evaluate(() => { document.querySelector('[class*=LoadoutsPanel_playerModel]').append(missingHead); });
     // The raw data is unchanged, but the missing slot has returned.
@@ -195,23 +232,25 @@ async function main() {
       await page.setViewportSize({ width, height });
     }
     await capture(1440, 1080, "expanded.png");
-    await host.locator("#scene-differences > summary").click();
+    await host.locator(".diff-toggle").click();
     await capture(1440, 1080, "desktop.png");
     await capture(390, 844, "mobile.png");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await action('结束对比');
     assert.equal(await page.locator('[data-mwi-scene-marker]').count(), 0);
     assert.equal(await page.locator('[data-mwi-scene-change]').count(), 0);
+    assert.equal(await page.locator('[data-mwi-scene-slot-change]').count(), 0);
+    assert.equal(await page.locator('[data-mwi-scene-comparing]').count(), 0);
     assert.equal(await host.locator('#scene-differences').isVisible(), false);
     await host.getByRole('button', { name: '远程单人', exact: true }).click();
     // Long names must wrap within the inherited native detail width.
     await host.getByRole("button", { name: "新建子方案" }).click();
     await host.getByLabel("新子方案名称").fill("ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(2));
     await host.getByRole("button", { name: "保存", exact: true }).click();
-    await status.filter({ hasText: "已保存“ABCDEFGHIJKLMNOPQRSTUVWXYZ" }).waitFor();
+    await host.locator('.choices [data-scene-id][aria-pressed="true"]').filter({ hasText: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" }).waitFor();
     assert.equal(await host.locator(".choices").evaluate(node => node.scrollWidth <= node.clientWidth), true);
     await action("移除");
-    await host.getByRole("button", { name: "移除", exact: true }).click(); await status.filter({ hasText: "已移除" }).waitFor();
+    await host.getByRole("button", { name: "确认移除", exact: true }).click(); await status.filter({ hasText: "已移除" }).waitFor();
     await host.getByRole("button", { name: "远程单人", exact: true }).click();
     await page.setViewportSize({ width: 1440, height: 1080 });
     await manual(original); await summary.filter({ hasText: "配装已一致" }).waitFor();
@@ -243,7 +282,7 @@ async function main() {
     await host.getByRole("button", { name: "远程单人", exact: true }).click();
     await action("改名");
     await host.getByLabel("修改子方案名称").fill("远程单人·改名"); await host.getByRole("button", { name: "保存", exact: true }).click();
-    await status.filter({ hasText: "已改名" }).waitFor();
+    await host.getByRole("button", { name: "远程单人·改名", exact: true }).waitFor();
     await manual(changed); await summary.filter({ hasText: "项差异" }).waitFor();
     await action("更新");
     const beforeUpdate = await page.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope)).find(row => row.name === "远程单人·改名"));
@@ -251,35 +290,36 @@ async function main() {
     await host.getByRole("button", { name: "取消", exact: true }).click();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1080 });
-      const update = host.locator(".header").getByRole("button", { name: "更新", exact: true });
+      const update = host.locator(".active-actions").getByRole("button", { name: "更新", exact: true });
       await update.scrollIntoViewIfNeeded();
       const before = await update.boundingBox();
       await update.click();
-      const confirmUpdate = host.locator(".header").getByRole("button", { name: "更新方案", exact: true });
+      const confirmUpdate = host.locator(".active-actions").getByRole("button", { name: "更新方案", exact: true });
       const after = await confirmUpdate.boundingBox();
       for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(before[key] - after[key]) < 1, `${width}px ${key}`);
-      const cancelBox = await host.locator(".header").getByRole("button", { name: "取消", exact: true }).boundingBox();
+      const cancelBox = await host.locator(".active-actions").getByRole("button", { name: "取消", exact: true }).boundingBox();
       assert.ok(cancelBox.x + cancelBox.width <= after.x);
       assert.equal(await host.getByText('更新“远程单人·改名”？', { exact: true }).isVisible(), false);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await host.screenshot({ path: path.join(root, '.impeccable/review', `update-confirm-${width}.png`) });
-      await host.locator(".header").getByRole("button", { name: "取消", exact: true }).click();
+      await host.locator(".active-actions").getByRole("button", { name: "取消", exact: true }).click();
     }
     await page.setViewportSize({ width: 1440, height: 1080 });
-    const update = host.locator(".header").getByRole("button", { name: "更新", exact: true });
+    const update = host.locator(".active-actions").getByRole("button", { name: "更新", exact: true });
     await update.scrollIntoViewIfNeeded();
     const clickBox = await update.boundingBox();
     await page.mouse.dblclick(clickBox.x + clickBox.width / 2, clickBox.y + clickBox.height / 2, { delay: 80 });
-    await host.locator(".header").getByRole("button", { name: "更新", exact: true }).waitFor();
+    await host.locator(".active-actions").getByRole("button", { name: "更新", exact: true }).waitFor();
     await summary.filter({ hasText: "配装已一致" }).waitFor();
     assert.equal(await status.isVisible(), false);
     const afterUpdate = await page.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope)).find(row => row.name === "远程单人·改名"));
     assert.deepEqual(afterUpdate.snapshot.raw, changed);
     pass("desktop/mobile update confirmation keeps the original button bounds, cancel sits to its left, and two clicks at one coordinate save the selected scene");
-    await action("移除"); await host.getByRole("button", { name: "移除", exact: true }).click();
+    await action("移除"); await host.getByRole("button", { name: "确认移除", exact: true }).click();
     await status.filter({ hasText: "已移除" }).waitFor(); assert.equal(await host.locator(".choices button[data-scene-id]").count(), 2);
     assert.equal(await host.getByRole("button", { name: "新建子方案" }).evaluate(node => node.getRootNode().activeElement === node), true);
-    await host.getByRole("button", { name: "撤销移除", exact: true }).click(); await status.filter({ hasText: "已恢复" }).waitFor();
+    await host.getByRole("button", { name: "撤销移除", exact: true }).click();
+    await host.getByRole("button", { name: "远程单人·改名", exact: true }).waitFor();
     assert.equal(await host.locator(".choices button[data-scene-id]").count(), 3);
     pass("reload persistence, rename, explicitly confirmed snapshot update, cancellation and reversible removal work");
     const backupEvent = page.waitForEvent("download"); await action("导出");
@@ -320,7 +360,8 @@ async function main() {
     const stale = await crossTab.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope)).find(row => row.name === "远程迷宫"));
     await host.getByRole("button", { name: "远程迷宫", exact: true }).click();
     await action("改名"); await host.getByLabel("修改子方案名称").fill("远程迷宫·跨页");
-    await host.getByRole("button", { name: "保存", exact: true }).click(); await status.filter({ hasText: "已改名" }).waitFor();
+    await host.getByRole("button", { name: "保存", exact: true }).click();
+    await host.getByRole("button", { name: "远程迷宫·跨页", exact: true }).waitFor();
     await secondHost.getByRole("button", { name: "远程迷宫·跨页", exact: true }).waitFor();
     const staleError = await crossTab.evaluate(async old => { try { await MWILoadoutScenes.Store.mutate(MWILoadoutScenes.Adapter.current(), old, 'remove'); return ''; } catch (e) { return e.message; } }, stale);
     assert.match(staleError, /其他标签页更新/); await crossTab.close();
@@ -360,25 +401,27 @@ async function main() {
       });
       await c.addInitScript({ content: `window.GM_xmlhttpRequest=o=>window.mockClipboard(o.method,o.url,o.data).then(o.onload,o.onerror);` + read("mwi_combat_loadout_archive.user.js") });
       const p = await c.newPage(); await p.goto(base);
-      await p.waitForFunction(() => ["尚无同步数据", "已同步"].some(label => window.MWILoadoutScenes?.Cloud?.status(71, 12).startsWith(label)));
+      await p.waitForFunction(() => ["配装已同步", "已核对", "附加记录已同步"].some(label => window.MWILoadoutScenes?.Cloud?.status(71, 12).startsWith(label)));
       return { c, p, scene: p.locator("#mwi-loadout-scenes-host") };
     }
     const firstDevice = await cloudDevice();
     await firstDevice.scene.getByRole("button", { name: "新建子方案" }).click();
     await firstDevice.scene.getByLabel("新子方案名称").fill("跨设备方案");
     await firstDevice.scene.getByRole("button", { name: "保存", exact: true }).click();
-    await firstDevice.scene.getByText("已保存“跨设备方案”").waitFor();
-    await firstDevice.p.waitForFunction(() => window.MWILoadoutScenes.Cloud.status(71, 12).startsWith("已同步"));
+    await firstDevice.scene.locator('.choices [data-scene-id][aria-pressed="true"]').filter({ hasText: "跨设备方案" }).waitFor();
+    await firstDevice.p.waitForFunction(() => ["配装已同步", "附加记录已同步"].some(label => window.MWILoadoutScenes.Cloud.status(71, 12).startsWith(label)));
     await firstDevice.p.waitForFunction(async () => {
       const response = await window.mockClipboard("GET", "https://clipboard.im/api/clipboard/71loadout12");
       return JSON.parse(response.responseText).text_content?.includes("跨设备方案");
     });
     const nextDevice = await cloudDevice();
     await nextDevice.scene.getByRole("button", { name: "跨设备方案", exact: true }).waitFor();
+    await nextDevice.scene.getByRole("tab", { name: /云同步/ }).click();
     const panel = nextDevice.scene.locator(".cloud-panel");
-    await panel.locator(":scope > summary").click();
+    if (await panel.locator(".cloud-tech > summary").count()) await panel.locator(".cloud-tech > summary").click();
     assert.equal(await panel.locator("a").getAttribute("href"), "https://clipboard.im/71loadout12");
-    await panel.getByText("1 个子方案 · 0 条行动选择").waitFor();
+    await panel.getByText("子方案：1").waitFor();
+    await panel.getByText("行动：0").waitFor();
     const boardKey = "https://clipboard.im/api/clipboard/71loadout12";
     const divergent = JSON.parse(cloudTexts.get(boardKey));
     const savedScene = divergent.scenes[0];
@@ -391,10 +434,10 @@ async function main() {
       updatedAt: savedScene.updatedAt + 1, ancestors: [savedScene.revision] }];
     cloudTexts.set(boardKey, JSON.stringify(divergent));
     await panel.getByRole("button", { name: "立即同步" }).click();
-    await panel.locator(".cloud-compare > summary").click();
+    await panel.locator(".cloud-versions .cloud-compare").waitFor();
     await panel.getByRole("button", { name: "仅保留 B" }).click();
     await panel.getByRole("button", { name: "取消" }).click();
-    assert.equal(await panel.locator(".cloud-compare").count(), 1);
+    assert.equal(await panel.locator(".cloud-versions .cloud-compare").count(), 1);
     await panel.getByRole("button", { name: "仅保留 B" }).click();
     await panel.getByRole("button", { name: "确认", exact: true }).click();
     await nextDevice.scene.getByText("版本选择已存本机。").waitFor();
@@ -412,6 +455,7 @@ async function main() {
     pass("all four official game origins and development loader mount correctly; old simulator cannot start the app");
     await require("./scene_types_browser.cjs")(browser, read("mwi_combat_loadout_archive.user.js"), fixture, pass);
     await require("./action_memory_browser.cjs")(browser, read("mwi_combat_loadout_archive.user.js"), pass);
+    await require("./overview_browser.cjs")(browser, read("mwi_combat_loadout_archive.user.js"), root, pass);
   } finally { await browser.close(); }
   assert.equal(browser.isConnected(), false); pass("isolated Chrome closed normally");
   fs.mkdirSync(path.join(root, "preview"), { recursive: true });

@@ -2,10 +2,27 @@
   "use strict";
   const app = root.MWILoadoutScenes = root.MWILoadoutScenes || {};
   const selector = part => `[class*="LoadoutsPanel_${part}__"]`;
-  const visible = element => Boolean(element?.isConnected && element.getClientRects().length && !element.closest('[hidden], [aria-hidden="true"]'));
-  function hostFiber(element, portalRoot = null) {
+  // Popup libraries hide the background from assistive technology while it
+  // remains on screen. That must not detach the active scene and its highlights.
+  const visible = element => Boolean(element?.isConnected && element.getClientRects().length && !element.closest('[hidden]'));
+  function isCommitted(fiber) {
+    if (!fiber) return false;
+    let node = fiber;
+    const seen = new Set();
+    for (let depth = 0; node && depth < 240 && !seen.has(node); depth++) {
+      seen.add(node);
+      if (!node.return) return Boolean(node.stateNode && node.stateNode.current === node);
+      node = node.return;
+    }
+    return false;
+  }
+  function hostFiber(element, portalRoot = null, committedOnly = false) {
     const key = Object.getOwnPropertyNames(element).find(key => /^__react(?:Fiber|InternalInstance)\$/.test(key));
-    if (key && element[key]) return element[key];
+    if (key && element[key]) {
+      if (!committedOnly) return element[key];
+      if (isCommitted(element[key])) return element[key];
+      if (isCommitted(element[key].alternate)) return element[key].alternate;
+    }
     // Some live pages expose no host expandos. Read only the committed tree,
     // locating this exact DOM node instead of choosing an unrelated controller.
     const container = document.getElementById("root");
@@ -48,6 +65,8 @@
     return controller;
   }
   function current() {
+    const overview = app.Overview?.currentScene?.();
+    if (overview) return overview;
     const panel = visibleLoadoutPanel();
     if (!panel) return null;
     const details = panel.querySelector(selector("details")), setup = panel.querySelector(selector("setup"));
@@ -106,7 +125,8 @@
         milking_tool: [7,1], foraging_tool: [7,2], woodcutting_tool: [7,3], cheesesmithing_tool: [7,4], crafting_tool: [7,5],
         tailoring_tool: [8,1], cooking_tool: [8,2], brewing_tool: [8,3], alchemy_tool: [8,4], enhancing_tool: [8,5] }[change.slot];
       if (!position) return null;
-      return [...slots.children].find(el => el.style.gridRowStart === String(position[0]) && el.style.gridColumnStart === String(position[1])) || null;
+      const row = position[0] - (ctx.overview && change.slot.endsWith("_tool") ? 1 : 0);
+      return [...slots.children].find(el => el.style.gridRowStart === String(row) && el.style.gridColumnStart === String(position[1])) || null;
     }
     const container = ctx.setup.querySelector(selector(kind === "ability" ? "abilities" : "consumables"));
     if (!container) return null;
@@ -119,36 +139,143 @@
   }
   // Match only choices in a visible picker belonging to the changed native slot.
   // Item identity comes from component props, never translated labels or icon URLs.
-  function pickerTargets(ctx, changes) {
-    const result = [];
-    for (const list of document.querySelectorAll('[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"]')) {
-      if (!visible(list)) continue;
-      const ability = list.className.includes("AbilitySlot_");
-      const listFiber = hostFiber(list, hostFiber(ctx.panel)), ancestors = new Set(); let owner = listFiber;
-      for (let i = 0; owner && i < 80; i++, owner = owner.return) ancestors.add(owner.stateNode);
-      const change = changes.find(change => change.to && (ability ? change.kind === "ability" : ["equipment", "food", "drink"].includes(change.kind)) && ancestors.has(target(ctx, change)));
-      if (!change) continue;
-      const itemTarget = change.kind === "equipment" ? change.to : { itemHrid: change.to };
-      const hosts = new Map(), queue = listFiber?.child ? [listFiber.child] : [], visited = new Set();
-      for (let count = 0; queue.length && count < 4000; count++) {
-        const fiber = queue.pop(); if (!fiber || visited.has(fiber)) continue; visited.add(fiber);
-        if (fiber.stateNode?.nodeType === 1) hosts.set(fiber.stateNode, fiber);
-        if (fiber.child) queue.push(fiber.child); if (fiber.sibling) queue.push(fiber.sibling);
+  let lastPickerMatches = [];
+  function pickerPath(scopeFiber, list) {
+    const pending = scopeFiber ? [{ fiber: scopeFiber, parent: null }] : [], seen = new Set();
+    for (let count = 0; pending.length && count < 30000; count++) {
+      const entry = pending.pop(), { fiber, parent } = entry;
+      if (seen.has(fiber)) continue;
+      seen.add(fiber);
+      if (fiber.stateNode === list) {
+        const path = [];
+        for (let node = entry; node; node = node.parent) path.push(node.fiber);
+        return path;
       }
-      for (const choice of list.children) {
-        if (!visible(choice) || /insufficient|requirementsNotMet/.test(choice.className)) continue;
-        const first = hosts.get(choice) || hostFiber(choice), pending = first ? [first] : [], seen = new Set(); let match = false;
-        for (let count = 0; pending.length && count < 400; count++) {
-          const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue; seen.add(fiber);
-          const props = fiber.memoizedProps || fiber.stateNode?.props;
-          if (props && (ability ? props.abilityHrid === change.to : props.itemHrid === itemTarget.itemHrid &&
-              (!Object.hasOwn(itemTarget, "enhancementLevel") || props.enhancementLevel === itemTarget.enhancementLevel))) { match = true; break; }
-          if (fiber.child) pending.push(fiber.child);
-          if (fiber !== first && fiber.sibling) pending.push(fiber.sibling);
-        }
-        if (match) result.push(choice);
+      // Do not leave this setup via its siblings. Record the downward path:
+      // reused React children can have return pointers into an old alternate.
+      if (fiber !== scopeFiber && fiber.sibling) pending.push({ fiber: fiber.sibling, parent });
+      if (fiber.child && fiber.stateNode?.namespaceURI !== "http://www.w3.org/2000/svg") {
+        pending.push({ fiber: fiber.child, parent: entry });
       }
     }
+    return null;
+  }
+  function matchesChoice(props, ability, change, itemTarget) {
+    if (!props) return false;
+    if (ability) {
+      const id = props.abilityHrid || props.ability?.abilityHrid;
+      return id === change.to;
+    }
+    const item = props.itemHrid ? props : (props.item?.itemHrid ? props.item : props.characterItem?.itemHrid ? props.characterItem : null);
+    if (!item || item.itemHrid !== itemTarget.itemHrid) return false;
+    return !Object.hasOwn(itemTarget, "enhancementLevel") || (item.enhancementLevel ?? 0) === itemTarget.enhancementLevel;
+  }
+  function pickerTargets(ctx, changes) {
+    const result = [], matches = [];
+    const desired = changes.filter(change => change.to && ["equipment", "ability", "food", "drink"].includes(change.kind));
+    if (!desired.length) { lastPickerMatches = []; return result; }
+    const lists = [...document.querySelectorAll('[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"]')].filter(visible);
+    if (!lists.length) { lastPickerMatches = []; return result; }
+    // Host expandos may retain an alternate from before a popup opened or its
+    // filter changed. Traverse only the committed tree of this card's setup.
+    let scope = ctx.setup || ctx.panel;
+    if (!visible(scope)) { lastPickerMatches = []; return result; }
+    let scopeFiber = hostFiber(scope, null, true);
+    if (!scopeFiber && !ctx.overview && scope !== ctx.panel) {
+      scope = ctx.panel;
+      scopeFiber = hostFiber(scope, null, true);
+    }
+    const changeKeys = new Set(desired.map(change => app.Core.stable(change)));
+    for (const list of lists) {
+      const ability = list.className.includes("AbilitySlot_");
+      const path = pickerPath(scopeFiber, list);
+      if (!path) {
+        // A commit can briefly expose the DOM before its readable tree. Keep
+        // only previously verified, unchanged choices in this same open list.
+        // Changed targets, replaced/reused content and closed lists never survive.
+        for (const prior of lastPickerMatches) {
+          if (prior.list === list && prior.scope === ctx.scope && prior.setup === scope && visible(scope) &&
+              changeKeys.has(prior.changeKey) && prior.node.parentElement === list && visible(prior.node) &&
+              prior.node.className === prior.className && prior.node.innerHTML === prior.html) {
+            result.push(prior.node); matches.push(prior);
+          }
+        }
+        continue;
+      }
+      const listFiber = path[0];
+      const ancestors = new Set(); let ownerSlot = null;
+      for (const owner of path) {
+        ancestors.add(owner.stateNode);
+        const props = owner.memoizedProps || owner.stateNode?.props;
+        // Read the slot owner from the same committed portal branch. Searching
+        // the background slot's DOM expando can still return an old alternate.
+        if (!ownerSlot && props) {
+          if (ability && Number.isInteger(props.slotNumber)) ownerSlot = { kind: "ability", slot: props.slotNumber };
+          if (!ability && Number.isInteger(props.slotIndex) &&
+              ["/consumable_slot_types/food", "/consumable_slot_types/drink"].includes(props.consumableSlotTypeHrid))
+            ownerSlot = { kind: props.consumableSlotTypeHrid.split("/").pop(), slot: props.slotIndex };
+        }
+      }
+      if (!ancestors.has(scope)) continue;
+      const matching = changes.filter(change => change.to &&
+        (ability ? change.kind === "ability" : ["equipment", "food", "drink"].includes(change.kind)) &&
+        (ownerSlot ? change.kind === ownerSlot.kind && change.slot === ownerSlot.slot : ancestors.has(target(ctx, change))));
+      if (matching.length !== 1) continue;
+      const change = matching[0];
+      const itemTarget = change.kind === "equipment" ? change.to : { itemHrid: change.to };
+      // Index direct choice elements without descending into their subtrees so
+      // large pickers (100+ items) never starve early options, and retain each
+      // choice's exclusive component wrappers strictly below listFiber.
+      const choiceSet = new Set(list.children), hosts = new Map(), wrapperUse = new Map();
+      const queue = listFiber?.child ? [{ fiber: listFiber.child, wrappers: [] }] : [], visited = new Set();
+      for (let count = 0; queue.length && count < 30000; count++) {
+        const { fiber, wrappers } = queue.pop(); if (!fiber || visited.has(fiber)) continue; visited.add(fiber);
+        if (fiber.sibling) queue.push({ fiber: fiber.sibling, wrappers });
+        if (fiber.stateNode?.nodeType === 1) {
+          if (choiceSet.has(fiber.stateNode)) {
+            hosts.set(fiber.stateNode, { fiber, wrappers });
+            for (const wrapper of wrappers) wrapperUse.set(wrapper, (wrapperUse.get(wrapper) || 0) + 1);
+            continue;
+          }
+          if (fiber.stateNode.namespaceURI === "http://www.w3.org/2000/svg") continue;
+        }
+        if (fiber.child) {
+          const nextWrappers = fiber.stateNode?.nodeType === 1 ? wrappers : [...wrappers, fiber];
+          queue.push({ fiber: fiber.child, wrappers: nextWrappers });
+        }
+      }
+      const multi = list.children.length > 1;
+      for (const choice of list.children) {
+        if (!visible(choice) || /insufficient|requirementsNotMet/.test(choice.className)) continue;
+        const entry = hosts.get(choice);
+        let match = false;
+        if (entry) {
+          for (const wrapper of entry.wrappers) {
+            if (multi && (wrapperUse.get(wrapper) || 0) > 1) continue;
+            if (matchesChoice(wrapper.memoizedProps || wrapper.stateNode?.props, ability, change, itemTarget)) {
+              match = true; break;
+            }
+          }
+          if (!match) {
+            const first = entry.fiber, pending = [first], seen = new Set();
+            for (let count = 0; pending.length && count < 400; count++) {
+              const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue; seen.add(fiber);
+              if (matchesChoice(fiber.memoizedProps || fiber.stateNode?.props, ability, change, itemTarget)) {
+                match = true; break;
+              }
+              if (fiber.child && fiber.stateNode?.namespaceURI !== "http://www.w3.org/2000/svg") pending.push(fiber.child);
+              if (fiber !== first && fiber.sibling) pending.push(fiber.sibling);
+            }
+          }
+        }
+        if (match) {
+          result.push(choice);
+          matches.push({ node: choice, list, scope: ctx.scope, setup: scope,
+            changeKey: app.Core.stable(change), className: choice.className, html: choice.innerHTML });
+        }
+      }
+    }
+    lastPickerMatches = matches;
     return result;
   }
   function actionContexts() {
@@ -197,11 +324,25 @@
     const loadoutIds = Object.values(dict || {}).map(row => row?.id).filter(id => Number.isSafeInteger(id) && id > 0);
     return { character, loadoutIds: dict ? loadoutIds : null, loadouts: dict };
   }
+  function currentCharacterName(ctx) {
+    const expected = ctx?.props?.characterInfo?.characterID;
+    if (!Number.isSafeInteger(expected) || expected <= 0) return "";
+    const host = document.querySelector('[class*="GamePage_gamePage"]');
+    let fiber = host && hostFiber(host);
+    for (let depth = 0; fiber && depth < 80; depth++, fiber = fiber.return) {
+      const state = fiber.stateNode?.state;
+      if (state?.characterItemMap && state.character) {
+        if (state.isLoading || state.isFullDisconnected || state.character.id !== expected) return "";
+        return typeof state.character.name === "string" ? state.character.name : "";
+      }
+    }
+    return "";
+  }
   function nativeSnapshot(character, id) {
     const ctx = cloudContext();
     if (ctx?.character !== character || ctx.loadouts?.[id]?.id !== id)
       throw Error("当前原生配装尚未完整加载，请稍后重试。");
     return app.Core.snapshot(ctx.loadouts[id]);
   }
-  app.Adapter = Object.freeze({ nativeSnapshot, cloudContext, current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
+  app.Adapter = Object.freeze({ currentCharacterName, nativeSnapshot, cloudContext, current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
 })(globalThis);

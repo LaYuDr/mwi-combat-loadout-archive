@@ -1,57 +1,121 @@
 (function (root) {
   "use strict";
   const app = root.MWILoadoutScenes;
-  function mount(ctx, el, button, resolve) {
+  function formatTime(ts) {
+    const date = new Date(ts);
+    const pad = n => String(n).padStart(2, "0");
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  function mount(ctx, el, button, resolve, onStateChange) {
     const character = ctx.props.characterInfo.characterID, id = ctx.raw.id;
     const board = app.Cloud.boardName(character, id), url = "https://clipboard.im/" + board;
-    const node = el("details", null, { class: "cloud-panel" });
-    const summary = el("summary", ""), note = el("p", "", { class: "cloud-note" });
-    const facts = el("dl", null, { class: "cloud-facts" });
-    function fact(label) {
-      const value = el("dd", "");
-      facts.append(el("dt", label), value);
-      return value;
+    const node = el("div", null, { class: "cloud-panel" });
+
+    const top = el("div", null, { class: "cloud-head" });
+    const statusWrap = el("div", null, { class: "cloud-status" });
+    const dot = el("span", null, { class: "cloud-dot", "aria-hidden": "true" });
+    const statusText = el("span", "", { class: "cloud-status-text" });
+    statusWrap.append(dot, statusText);
+
+    const sync = button("立即同步", () => app.Cloud.request(character, id), { class: "compact-btn" });
+    let copyTimer = null, feedbackTimer = null;
+    function showFeedback(text, isError = false) {
+      clearTimeout(feedbackTimer);
+      feedback.textContent = text;
+      feedback.classList.toggle("is-error", isError);
+      feedback.hidden = !text;
+      if (text) feedbackTimer = setTimeout(() => { feedback.hidden = true; }, isError ? 3600 : 2400);
     }
-    const nativeStatus = fact("原生配装内容"), sceneStatus = fact("场景子方案"), memoryStatus = fact("行动选择记录");
-    const checked = fact("上次核对"), address = fact("剪贴板 ID");
-    const link = el("a", board, { href: url, target: "_blank", rel: "noopener noreferrer", title: "打开这套配装的剪贴板" });
-    address.append(link);
-    const sync = button("立即同步", () => app.Cloud.request(character, id));
-    const feedback = el("p", "", { role: "status", class: "cloud-feedback" });
     const copy = button("复制地址", async () => {
-      try { await navigator.clipboard.writeText(url); feedback.textContent = "已复制剪贴板地址"; }
-      catch (_) { feedback.textContent = "请长按或右键剪贴板 ID，复制链接地址。"; }
-    });
+      try {
+        await navigator.clipboard.writeText(url);
+        clearTimeout(copyTimer);
+        copy.textContent = "已复制";
+        copy.classList.add("is-copied");
+        copyTimer = setTimeout(() => {
+          copy.textContent = "复制地址";
+          copy.classList.remove("is-copied");
+        }, 1800);
+      } catch (_) {
+        showFeedback("请手动复制下方地址。", true);
+      }
+    }, { class: "compact-btn ghost-btn copy-btn" });
     const controls = el("div", null, { class: "cloud-actions" });
     controls.append(sync, copy);
-    const versions = el("div", null, { class: "cloud-versions" });
-    const nativeConflict = el("details", null, { class: "cloud-compare", hidden: "" });
+    top.append(statusWrap, controls);
+
+    const note = el("p", "", { class: "cloud-note", hidden: "" });
+    const feedback = el("p", "", { role: "status", class: "cloud-feedback", hidden: "" });
+
+    const stats = el("div", null, { class: "cloud-stats", "aria-label": "同步概览" });
+    const nativeStat = el("span", "", { class: "cloud-stat" });
+    const sceneStat = el("span", "", { class: "cloud-stat" });
+    const memoryStat = el("span", "", { class: "cloud-stat" });
+    const checkedStat = el("span", "", { class: "cloud-stat cloud-stat-time" });
+    stats.append(nativeStat, sceneStat, memoryStat, checkedStat);
+
+    const nativeConflict = el("div", null, { class: "cloud-compare cloud-compare-alert", hidden: "" });
+    const nativeTitle = el("p", "当前游戏配装与云端不一致（已保留云端）", { class: "cloud-compare-title" });
+    const nativeDetails = el("details", null, { class: "cloud-diff-box" });
     const nativeDiff = el("ul", null, { class: "cloud-diff" });
-    const nativeConfirm = el("div", null, { hidden: "" });
-    nativeConfirm.append(el("p", "确认用当前游戏配装更新云端分享？订阅者之后会收到这份配置。"),
+    nativeDetails.append(el("summary", "查看差异"), nativeDiff);
+    const nativeConfirm = el("div", null, { class: "cloud-confirm", hidden: "" });
+    const nativeConfirmActions = el("div", null, { class: "cloud-actions" });
+    nativeConfirmActions.append(
+      button("取消", () => { nativeConfirm.hidden = true; nativeChoiceRow.hidden = false; }, { class: "compact-btn" }),
       button("确认更新分享", () => {
-        try { app.Cloud.publishCurrent(character, id); nativeConfirm.hidden = true; }
-        catch (error) { feedback.textContent = error.message; }
-      }), button("取消", () => { nativeConfirm.hidden = true; }));
-    nativeConflict.append(el("summary", "比较当前与云端配装"), nativeDiff,
-      button("用当前配装更新分享", () => { nativeConfirm.hidden = false; }),
-      button("将云端配置保存为子方案", async () => {
         try {
-          const snapshot = app.Cloud.info(character, id).nativeSnapshot;
-          if (!snapshot) throw Error("暂无云端配装内容，请先核对。");
-          await app.Virtual.adopt(character, { snapshot }, ctx.raw, "云端 · " + snapshot.raw.name.slice(0, 50));
-          feedback.textContent = "已保存云端配置为独立子方案。";
-        } catch (error) { feedback.textContent = error.message; }
-      }), nativeConfirm);
-    node.append(summary, note, facts, controls, feedback,
-      el("p", "分享此地址可让其他玩家订阅当前原生配装及子方案。知道地址的人可以读写这套配装的同步数据。", { class: "cloud-privacy" }), nativeConflict, versions);
+          app.Cloud.publishCurrent(character, id);
+          nativeConfirm.hidden = true;
+          nativeChoiceRow.hidden = false;
+        } catch (error) {
+          showFeedback(error.message, true);
+        }
+      }, { class: "compact-btn primary" })
+    );
+    nativeConfirm.append(el("p", "确认用当前游戏配装覆盖云端分享？订阅者将收到这份配置。"), nativeConfirmActions);
+    const nativeChoiceRow = el("div", null, { class: "cloud-actions" });
+    let adoptTimer = null;
+    const adoptCloudBtn = button("云端存为子方案", async () => {
+      try {
+        const snapshot = app.Cloud.info(character, id).nativeSnapshot;
+        if (!snapshot) throw Error("暂无云端配装内容，请先核对。");
+        await app.Virtual.adopt(character, { snapshot }, ctx.raw, "云端 · " + snapshot.raw.name.slice(0, 50));
+        clearTimeout(adoptTimer);
+        adoptCloudBtn.textContent = "已存为子方案";
+        adoptCloudBtn.classList.add("is-copied");
+        adoptTimer = setTimeout(() => {
+          adoptCloudBtn.textContent = "云端存为子方案";
+          adoptCloudBtn.classList.remove("is-copied");
+        }, 1800);
+      } catch (error) {
+        showFeedback(error.message, true);
+      }
+    }, { class: "compact-btn" });
+    nativeChoiceRow.append(
+      button("用当前覆盖云端", () => { nativeChoiceRow.hidden = true; nativeConfirm.hidden = false; }, { class: "compact-btn" }),
+      adoptCloudBtn
+    );
+    nativeConflict.append(nativeTitle, nativeDetails, nativeChoiceRow, nativeConfirm);
+
+    const versions = el("div", null, { class: "cloud-versions" });
+
+    const tech = el("div", null, { class: "cloud-tech cloud-tech-body" });
+    const linkRow = el("div", null, { class: "cloud-link-row" });
+    const link = el("a", board, { href: url, target: "_blank", rel: "noopener noreferrer", title: "打开分享地址" });
+    linkRow.append(el("span", "分享地址：", { class: "muted" }), link);
+    tech.append(linkRow, el("p", "可订阅配装及子方案，持有链接者可读写。", { class: "cloud-privacy" }));
+
+    node.append(top, note, feedback, stats, nativeConflict, versions, tech);
 
     function comparison(main, copyRow) {
-      const view = el("details", null, { class: "cloud-compare" });
-      const toggle = el("summary", "比较版本 · " + main.name);
+      const view = el("details", null, { class: "cloud-compare", open: "" });
+      const toggle = el("summary", "版本冲突 · " + main.name);
       view.append(toggle);
-      view.addEventListener("toggle", () => {
-        if (!view.open || view.childElementCount > 1) return;
+      let built = false;
+      function build() {
+        if (built) return;
+        built = true;
         const names = el("dl", null, { class: "cloud-facts" });
         for (const [label, row] of [["版本 A", main], ["版本 B", copyRow]]) {
           names.append(el("dt", label), el("dd", row.name + (row.removedAt != null ? " · 已移除" : "") +
@@ -66,57 +130,70 @@
               el("div", "B · " + app.Adapter.describe(ctx, diff, diff.to)));
             list.append(li);
           }
-          view.append(list.childElementCount ? list : el("p", "两个版本的配装项目一致。"));
+          view.append(list.childElementCount ? list : el("p", "两个版本的配装项目一致。", { class: "muted" }));
         } catch (error) { view.append(el("p", error.message)); }
         const choices = el("div", null, { class: "cloud-actions" });
         const confirmation = el("div", null, { class: "cloud-confirm", hidden: "" });
         const prompt = el("p", ""), actions = el("div", null, { class: "cloud-actions" });
         let choice, trigger;
-        const commit = button("确认", () => resolve(main, copyRow, choice), { class: "primary" });
-        const cancel = button("取消", () => { confirmation.hidden = true; choices.hidden = false; trigger.focus(); });
+        const commit = button("确认", () => resolve(main, copyRow, choice), { class: "compact-btn primary" });
+        const cancel = button("取消", () => { confirmation.hidden = true; choices.hidden = false; trigger.focus(); }, { class: "compact-btn" });
         confirmation.addEventListener("keydown", event => {
           if (event.key === "Escape") { event.stopPropagation(); cancel.click(); }
         });
-        actions.append(commit, cancel); confirmation.append(prompt, actions);
+        actions.append(cancel, commit); confirmation.append(prompt, actions);
         for (const [key, label] of [["both", "保留两份"], ["a", "仅保留 A"], ["b", "仅保留 B"]]) {
           const btn = button(label, () => {
             if (key === "both") { resolve(main, copyRow, key); return; }
             choice = key; trigger = btn; choices.hidden = true; confirmation.hidden = false;
-            prompt.textContent = "确认" + label + "？另一版本将从子方案列表移除，结果会同步到其他设备。";
+            prompt.textContent = "确认" + label + "？另一版本将被移除并同步到其他设备。";
             cancel.focus();
-          });
+          }, { class: "compact-btn" });
           choices.append(btn);
         }
         view.append(choices, confirmation);
-      });
+      }
+      build();
       return view;
     }
+
     let lastRows, pairs = [], signature = "", nativeSignature = "";
-    nativeConflict.addEventListener("toggle", () => { if (lastRows) update(lastRows); });
+    nativeDetails.addEventListener("toggle", () => { if (lastRows) update(lastRows); });
+
     function update(rows, freshContext) {
       if (freshContext?.scope === ctx.scope) ctx = freshContext;
       const state = app.Cloud.info(character, id);
       if (rows !== lastRows) { pairs = app.Cloud.conflictPairs(rows); lastRows = rows; }
-      let label = state.label;
+      const warning = Boolean(state.warning || pairs.length);
+      let label = warning ? state.label : "";
       if (pairs.length) {
         const pending = pairs.length + " 组版本待比较";
         label = state.kind === "ok" && !state.offline ? pending : state.label + " · " + pending;
       }
-      const heading = "云同步 · " + label;
-      if (summary.textContent !== heading) summary.textContent = heading;
-      summary.classList.toggle("cloud-warning", state.warning || Boolean(pairs.length));
+      const busy = state.kind === "busy" || state.kind === "pending";
+      if (statusText.textContent !== label) statusText.textContent = label;
+      statusWrap.hidden = !warning;
+      statusWrap.classList.toggle("cloud-warning", warning);
+      dot.dataset.state = warning ? "warn" : "idle";
+
       note.textContent = state.kind === "setup" || state.kind === "blocked" || state.kind === "error" ? state.detail :
-        state.offline ? "可以继续保存子方案，联网后会自动核对。" :
-        state.nativeMismatch ? "当前游戏配置与云端分享不同，已保留云端内容。请比较后选择；不会自动更换游戏装备。" :
-        pairs.length ? pairs.length + " 组修改需要比较。两个版本都已保留。" : "";
+        state.offline ? "离线修改已存本机，联网后自动同步。" :
+        pairs.length ? pairs.length + " 组冲突待处理，两个版本均已保留。" : "";
       note.hidden = !note.textContent;
-      checked.textContent = state.checked == null ? "尚未核对" : new Date(state.checked).toLocaleString();
-      nativeStatus.textContent = state.checked == null ? "待核对" : state.nativeMismatch ? "与当前游戏配置不同，待确认" :
-        state.nativeAvailable ? "已上传装备、技能、消耗品及配置选项" : "尚无配装快照";
-      sceneStatus.textContent = state.sceneCount == null ? "待核对" : state.sceneCount + " 个 · 已核对";
-      memoryStatus.textContent = state.memoryCount == null ? "待核对" : state.memoryCount + " 条 · 已核对";
+
+      nativeStat.textContent = state.nativeMismatch ? "原生：待确认" : "";
+      nativeStat.hidden = !nativeStat.textContent;
+      sceneStat.textContent = state.sceneCount == null ? "" : `子方案：${state.sceneCount}`;
+      sceneStat.hidden = !sceneStat.textContent;
+      memoryStat.textContent = state.memoryCount == null ? "" : `行动：${state.memoryCount}`;
+      memoryStat.hidden = !memoryStat.textContent;
+      checkedStat.textContent = "";
+      checkedStat.hidden = true;
+      checkedStat.removeAttribute("title");
+      stats.hidden = nativeStat.hidden && sceneStat.hidden && memoryStat.hidden;
+
       nativeConflict.hidden = !state.nativeMismatch;
-      if (state.nativeMismatch && nativeConflict.open) {
+      if (state.nativeMismatch && nativeDetails.open) {
         const key = app.Core.stable([ctx.raw, state.nativeSnapshot]);
         if (key !== nativeSignature) {
           nativeSignature = key;
@@ -128,15 +205,18 @@
           } catch (error) { nativeDiff.replaceChildren(el("li", error.message)); }
         }
       }
+
       sync.disabled = state.offline || state.kind === "busy";
       sync.textContent = state.kind === "setup" || state.kind === "blocked" || state.kind === "error" ? "重新检查" : "立即同步";
+
       const key = pairs.map(([a, b]) => [a.id, a.revision, b.id, b.revision].join("/")).join("|");
       if (key !== signature) {
         const restoreFocus = versions.contains(node.getRootNode().activeElement);
         versions.replaceChildren(...pairs.map(([a, b]) => comparison(a, b)));
         signature = key;
-        if (restoreFocus) summary.focus();
+        if (restoreFocus) sync.focus();
       }
+      onStateChange?.({ warning, busy, label, conflicts: pairs.length, nativeMismatch: Boolean(state.nativeMismatch) });
     }
     return { node, update };
   }
