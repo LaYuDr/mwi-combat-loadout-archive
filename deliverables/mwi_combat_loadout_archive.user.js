@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.14
+// @version      0.2.15
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
@@ -509,7 +509,7 @@
     return { dispose, report, client };
   }
   if (typeof module !== "undefined" && module.exports) module.exports = { createUsageClient, boot };
-  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.14","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
+  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.15","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
 setValue: typeof GM_setValue === "function" ? GM_setValue : null,
 listen: typeof GM_addValueChangeListener === "function" ? GM_addValueChangeListener : null,
 unlisten: typeof GM_removeValueChangeListener === "function" ? GM_removeValueChangeListener : null,
@@ -861,28 +861,97 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     }
     return result;
   }
-  function diff(current, target) {
+  const LIFE_SKILLS = new Set(["milking", "foraging", "woodcutting", "cheesesmithing", "crafting", "tailoring", "cooking", "brewing", "alchemy", "enhancing"]);
+  const GATHERING_SKILLS = new Set(["milking", "foraging", "woodcutting"]);
+  const UNIVERSAL_LIFE_STATS = new Set(["skillingSpeed", "skillingEfficiency", "skillingEssenceFind", "skillingRareFind", "skillingExperience", "taskSpeed"]);
+  function diff(current, target, options = null) {
     const a = validate(current), b = validateSnapshot(target).raw, changes = [];
     if (a.id !== b.id || (a.actionTypeHrid || "") !== (b.actionTypeHrid || ""))
       throw Error("子方案与当前父配装不匹配，请重新选择。");
     const combat = b.actionTypeHrid === "/action_types/combat";
+    const ignoreEmpty = Boolean(options?.ignoreHarmlessEmpty);
+    const itemDetails = object(options?.itemDetails) ? options.itemDetails : null;
+    const actionSkill = typeof b.actionTypeHrid === "string" && b.actionTypeHrid.startsWith("/action_types/")
+      ? b.actionTypeHrid.slice("/action_types/".length) : "";
+    const isSingleLife = LIFE_SKILLS.has(actionSkill);
+    const targetHasDrinks = Boolean(b.drinkItemHrids?.some(Boolean));
+    const targetHasFood = Boolean(b.foodItemHrids?.some(Boolean));
     const add = (kind, slot, label, from, to) => {
       if (stable(from) !== stable(to)) changes.push({ kind, slot, label, from, to });
     };
     add("setting", "enhancement", "强化选择", a.useExactEnhancement, b.useExactEnhancement);
     const ae = equipment(a), be = equipment(b);
+    const isTwoHandTarget = Boolean(
+      b.wearableMap["/item_locations/two_hand"] ||
+      (be.main_hand && itemDetails?.[be.main_hand.itemHrid]?.equipmentDetail?.type === "/equipment_types/two_hand")
+    );
+    const isHarmlessEmptyPouch = currentPouch => {
+      if (!currentPouch) return true;
+      const detail = itemDetails?.[currentPouch.itemHrid]?.equipmentDetail;
+      if (!detail) return true;
+      if (object(detail.combatStats)) {
+        for (const [stat, val] of Object.entries(detail.combatStats)) {
+          if (!val || stat === "foodSlots" || stat === "drinkSlots") continue;
+          if (stat === "drinkConcentration" && !targetHasDrinks) continue;
+          if (stat === "foodHaste" && (!combat || !targetHasFood)) continue;
+          return false;
+        }
+      }
+      if (!combat && object(detail.noncombatStats)) {
+        for (const [stat, val] of Object.entries(detail.noncombatStats)) {
+          if (!val) continue;
+          if (stat === "drinkConcentration" && !targetHasDrinks) continue;
+          return false;
+        }
+      }
+      return true;
+    };
+    const affectsLifeSkill = (itemHrid, skill) => {
+      const detail = itemDetails?.[itemHrid];
+      if (!detail) return true;
+      const stats = detail.equipmentDetail?.noncombatStats;
+      if (!object(stats)) return false;
+      for (const [stat, val] of Object.entries(stats)) {
+        if (!val) continue;
+        if (UNIVERSAL_LIFE_STATS.has(stat)) return true;
+        if (stat === "drinkConcentration" && targetHasDrinks) return true;
+        if (stat === "gatheringQuantity" && GATHERING_SKILLS.has(skill)) return true;
+        if (stat === "enhancingSuccess" && skill === "enhancing") return true;
+        if (stat.startsWith(skill)) return true;
+      }
+      return false;
+    };
+    const pouchIgnored = ignoreEmpty && !be.pouch && isHarmlessEmptyPouch(ae.pouch);
     for (const key of new Set([...Object.keys(ae), ...Object.keys(be)])) {
       const normalize = v => v ? { itemHrid: v.itemHrid, ...(b.useExactEnhancement ? { enhancementLevel: v.enhancementLevel } : {}) } : null;
-      add("equipment", key, EQUIPMENT[key] || key, normalize(ae[key]), normalize(be[key]));
+      const from = normalize(ae[key]), to = normalize(be[key]);
+      if (ignoreEmpty && to === null && from !== null) {
+        if (key === "off_hand" && isTwoHandTarget) continue;
+        if (key === "trinket") continue;
+        if (key === "pouch" && pouchIgnored) continue;
+        if (isSingleLife && key.endsWith("_tool") && key !== `${actionSkill}_tool`) continue;
+        if (isSingleLife && itemDetails && !affectsLifeSkill(from.itemHrid, actionSkill)) continue;
+      }
+      add("equipment", key, EQUIPMENT[key] || key, from, to);
     }
     if (combat) for (let slot = 1; slot <= 5; slot++) {
       const from = a.abilityMap[slot] || null, to = b.abilityMap[slot] || null;
       add("ability", slot, `技能 ${slot}`, from, to);
       add("ability_trigger", slot, `技能 ${slot} · 触发条件`, from ? a.abilityCombatTriggersMap?.[from] || [] : [], to ? b.abilityCombatTriggersMap?.[to] || [] : []);
     }
+    let caps = { food: 3, drink: 3 };
+    if (ignoreEmpty && itemDetails) {
+      const effectivePouch = be.pouch || (pouchIgnored ? ae.pouch : null);
+      if (!effectivePouch) caps = { food: 1, drink: 1 };
+      else {
+        const stats = itemDetails[effectivePouch.itemHrid]?.equipmentDetail?.combatStats;
+        if (stats) caps = { food: Math.min(3, 1 + (Number(stats.foodSlots) || 0)), drink: Math.min(3, 1 + (Number(stats.drinkSlots) || 0)) };
+      }
+    }
     for (const kind of combat ? ["food", "drink"] : b.actionTypeHrid ? ["drink"] : []) {
       for (let slot = 0; slot < 3; slot++) {
         const from = a[`${kind}ItemHrids`][slot] || null, to = b[`${kind}ItemHrids`][slot] || null;
+        if (ignoreEmpty && to === null && slot >= caps[kind]) continue;
         const label = `${kind === "food" ? "食物" : "饮料"} ${slot + 1}`;
         add(kind, slot, label, from, to);
         if (combat) add(`${kind}_trigger`, slot, `${label} · 触发条件`, from ? a.consumableCombatTriggersMap?.[from] || [] : [], to ? b.consumableCombatTriggersMap?.[to] || [] : []);
@@ -5056,7 +5125,18 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     document.head.append(style);
   }
 
-  app.Overview = Object.freeze({ start, sync, currentScene });
+  function itemDetails() {
+    try {
+      const game = gameRuntime();
+      if (app.VirtualDraft?.catalog) return app.VirtualDraft.catalog(game?.codec, game?.sprites).items;
+      const raw = root.localStorage.getItem("initClientData");
+      if (!raw) return null;
+      const text = raw.trimStart().startsWith("{") ? raw : game?.codec?.decompressFromUTF16(raw);
+      return text ? JSON.parse(text).itemDetailMap || null : null;
+    } catch (_) { return null; }
+  }
+
+  app.Overview = Object.freeze({ start, sync, currentScene, itemDetails });
 })(globalThis);
 
 // ---- app.js ----
@@ -5361,9 +5441,10 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     }, true);
   }
   function currentDiff(ctx, row) {
-    const key = `${ctx.scope}|${last}|${row.id}|${row.revision}`;
+    const itemDetails = app.Overview?.itemDetails?.() || null;
+    const key = `${ctx.scope}|${last}|${row.id}|${row.revision}|${itemDetails ? 1 : 0}`;
     if (key !== cachedDiffKey || !cachedDiff) {
-      cachedDiff = Core.diff(ctx.raw, row.snapshot);
+      cachedDiff = Core.diff(ctx.raw, row.snapshot, { ignoreHarmlessEmpty: true, itemDetails });
       cachedDiffKey = key;
     }
     return cachedDiff;

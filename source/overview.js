@@ -746,5 +746,16 @@
     document.head.append(style);
   }
 
-  app.Overview = Object.freeze({ start, sync, currentScene });
+  function itemDetails() {
+    try {
+      const game = gameRuntime();
+      if (app.VirtualDraft?.catalog) return app.VirtualDraft.catalog(game?.codec, game?.sprites).items;
+      const raw = root.localStorage.getItem("initClientData");
+      if (!raw) return null;
+      const text = raw.trimStart().startsWith("{") ? raw : game?.codec?.decompressFromUTF16(raw);
+      return text ? JSON.parse(text).itemDetailMap || null : null;
+    } catch (_) { return null; }
+  }
+
+  app.Overview = Object.freeze({ start, sync, currentScene, itemDetails });
 })(globalThis);

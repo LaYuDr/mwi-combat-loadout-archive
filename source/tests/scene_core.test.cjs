@@ -194,3 +194,121 @@ test("importChoices extracts suggestedName across supported formats without ever
   }));
   assert.deepEqual(shykaiNumbered.map(c => c.suggestedName), ["一号位配装", ""]);
 });
+
+test("ignoreHarmlessEmpty suppresses only zero-impact empty target slots while keeping impactful empty reminders", () => {
+  const itemDetails = {
+    "/items/bow": { equipmentDetail: { type: "/equipment_types/two_hand", combatStats: { rangedDamage: 120 } } },
+    "/items/sword": { equipmentDetail: { type: "/equipment_types/main_hand", combatStats: { meleeDamage: 90 } } },
+    "/items/shield": { equipmentDetail: { type: "/equipment_types/off_hand", combatStats: { armor: 60 } } },
+    "/items/task_badge": { equipmentDetail: { type: "/equipment_types/trinket", noncombatStats: { taskSpeed: 0.05 } } },
+    "/items/large_pouch": { equipmentDetail: { type: "/equipment_types/pouch", combatStats: { foodSlots: 2, drinkSlots: 2 } } },
+    "/items/medium_pouch": { equipmentDetail: { type: "/equipment_types/pouch", combatStats: { foodSlots: 1, drinkSlots: 1 } } },
+    "/items/guzzling_pouch": { equipmentDetail: { type: "/equipment_types/pouch", combatStats: { foodSlots: 2, drinkSlots: 2, drinkConcentration: 0.1 }, noncombatStats: { drinkConcentration: 0.1 } } },
+    "/items/gluttonous_pouch": { equipmentDetail: { type: "/equipment_types/pouch", combatStats: { foodSlots: 2, drinkSlots: 2, foodHaste: 0.1 } } },
+    "/items/woodcutting_shirt": { equipmentDetail: { type: "/equipment_types/body", noncombatStats: { woodcuttingEfficiency: 0.05 } } },
+    "/items/cheesesmithing_shirt": { equipmentDetail: { type: "/equipment_types/body", noncombatStats: { cheesesmithingEfficiency: 0.05 } } },
+    "/items/philosopher_neck": { equipmentDetail: { type: "/equipment_types/neck", noncombatStats: { skillingExperience: 0.05 } } },
+    "/items/gathering_cloak": { equipmentDetail: { type: "/equipment_types/back", noncombatStats: { gatheringQuantity: 0.05 } } },
+    "/items/enhancing_gloves": { equipmentDetail: { type: "/equipment_types/hands", noncombatStats: { enhancingSuccess: 0.02 } } }
+  };
+
+  // 1. Combat: two-hand target suppresses empty off_hand; trinket & plain pouch empty suppressed;
+  //    regular gear, abilities, unlocked food/drinks still remind; raw diff without option stays exact.
+  const combatTarget = raw();
+  combatTarget.wearableMap = { "/item_locations/main_hand": "71::/item_locations/inventory::/items/bow::12" }; // normalized two-hand (like simulator import)
+  combatTarget.abilityMap = { 1: "/abilities/shot", 2: "", 3: "", 4: "", 5: "" };
+  combatTarget.foodItemHrids = ["/items/yogurt", "", ""];
+  combatTarget.drinkItemHrids = ["/items/coffee", "", ""];
+  const combatCurrent = structuredClone(combatTarget);
+  combatCurrent.wearableMap["/item_locations/off_hand"] = "71::/item_locations/inventory::/items/shield::10";
+  combatCurrent.wearableMap["/item_locations/trinket"] = "71::/item_locations/inventory::/items/task_badge::0";
+  combatCurrent.wearableMap["/item_locations/pouch"] = "71::/item_locations/inventory::/items/large_pouch::0";
+  // Raw diff (used by cloud conflict UI) keeps all 3 differences.
+  assert.deepEqual(Core.diff(combatCurrent, Core.snapshot(combatTarget)).map(c => c.slot).sort(), ["off_hand", "pouch", "trinket"]);
+  // Guided diff suppresses all 3 zero-impact empty slots.
+  assert.deepEqual(Core.diff(combatCurrent, Core.snapshot(combatTarget), { ignoreHarmlessEmpty: true, itemDetails }), []);
+
+  // Single-hand weapon target + empty off_hand MUST still remind (shield affects combat stats/threat).
+  const oneHandTarget = structuredClone(combatTarget);
+  oneHandTarget.wearableMap = { "/item_locations/main_hand": "71::/item_locations/inventory::/items/sword::12" };
+  const oneHandCurrent = structuredClone(oneHandTarget);
+  oneHandCurrent.wearableMap["/item_locations/off_hand"] = "71::/item_locations/inventory::/items/shield::10";
+  assert.deepEqual(Core.diff(oneHandCurrent, Core.snapshot(oneHandTarget), { ignoreHarmlessEmpty: true, itemDetails }).map(c => c.slot), ["off_hand"]);
+
+  // 2. Pouch with side-effect stats (guzzling_pouch / gluttonous_pouch):
+  //    reminds when target actually has drinks/food, suppresses when target has no drinks/food.
+  const guzzleCur = structuredClone(combatTarget);
+  guzzleCur.wearableMap["/item_locations/pouch"] = "71::/item_locations/inventory::/items/guzzling_pouch::10";
+  assert.deepEqual(Core.diff(guzzleCur, Core.snapshot(combatTarget), { ignoreHarmlessEmpty: true, itemDetails }).map(c => c.slot), ["pouch"]);
+  const noDrinkTarget = structuredClone(combatTarget);
+  noDrinkTarget.drinkItemHrids = ["", "", ""];
+  const guzzleNoDrinkCur = structuredClone(noDrinkTarget);
+  guzzleNoDrinkCur.wearableMap["/item_locations/pouch"] = "71::/item_locations/inventory::/items/guzzling_pouch::10";
+  assert.deepEqual(Core.diff(guzzleNoDrinkCur, Core.snapshot(noDrinkTarget), { ignoreHarmlessEmpty: true, itemDetails }), []);
+
+  const gluttonCur = structuredClone(combatTarget);
+  gluttonCur.wearableMap["/item_locations/pouch"] = "71::/item_locations/inventory::/items/gluttonous_pouch::10";
+  assert.deepEqual(Core.diff(gluttonCur, Core.snapshot(combatTarget), { ignoreHarmlessEmpty: true, itemDetails }).map(c => c.slot), ["pouch"]);
+  const noFoodTarget = structuredClone(combatTarget);
+  noFoodTarget.foodItemHrids = ["", "", ""];
+  const gluttonNoFoodCur = structuredClone(noFoodTarget);
+  gluttonNoFoodCur.wearableMap["/item_locations/pouch"] = "71::/item_locations/inventory::/items/gluttonous_pouch::10";
+  assert.deepEqual(Core.diff(gluttonNoFoodCur, Core.snapshot(noFoodTarget), { ignoreHarmlessEmpty: true, itemDetails }), []);
+
+  // 3. Locked consumable slots beyond effective pouch cap are ignored when target is empty;
+  //    unlocked extra food/drinks and abilities MUST still remind!
+  const noPouchCur = structuredClone(combatTarget);
+  noPouchCur.foodItemHrids = ["/items/yogurt", "/items/cake", ""]; // slot 1 locked (no pouch -> cap 1)
+  noPouchCur.drinkItemHrids = ["/items/coffee", "/items/tea", ""]; // slot 1 locked (no pouch -> cap 1)
+  assert.deepEqual(Core.diff(noPouchCur, Core.snapshot(combatTarget), { ignoreHarmlessEmpty: true, itemDetails }), []);
+  // When effective pouch is medium_pouch (cap 2), slot 1 IS unlocked (must remind!) while slot 2 is locked (ignored!).
+  const medTarget = structuredClone(combatTarget);
+  medTarget.wearableMap["/item_locations/pouch"] = "71::/item_locations/inventory::/items/medium_pouch::0";
+  const medCur = structuredClone(medTarget);
+  medCur.foodItemHrids = ["/items/yogurt", "/items/cake", "/items/apple"];
+  medCur.abilityMap[2] = "/abilities/heal";
+  assert.deepEqual(
+    Core.diff(medCur, Core.snapshot(medTarget), { ignoreHarmlessEmpty: true, itemDetails }).map(c => `${c.kind}:${c.slot}`),
+    ["ability:2", "food:1"]
+  );
+  // If target leaves pouch empty and current has large_pouch (retained via rule 3 -> cap 3), slot 1 IS unlocked so extra food reminds!
+  const keptLargeCur = structuredClone(combatTarget);
+  keptLargeCur.wearableMap["/item_locations/pouch"] = "71::/item_locations/inventory::/items/large_pouch::0";
+  keptLargeCur.foodItemHrids = ["/items/yogurt", "/items/cake", ""];
+  assert.deepEqual(
+    Core.diff(keptLargeCur, Core.snapshot(combatTarget), { ignoreHarmlessEmpty: true, itemDetails }).map(c => `${c.kind}:${c.slot}`),
+    ["food:1"]
+  );
+
+  // 4. Single-skill life loadout: unrelated 9 tools + unrelated combat/other-skill gear ignored when empty;
+  //    active skill tool & gear with active life/universal stats still remind; all-skills keeps all 10 tools.
+  const wcTarget = life("/action_types/woodcutting");
+  wcTarget.wearableMap = { "/item_locations/woodcutting_tool": "71::/item_locations/inventory::/items/woodcutting_tool::10" };
+  wcTarget.drinkItemHrids = ["/items/tea", "", ""];
+  const wcCur = structuredClone(wcTarget);
+  for (const skill of lifeTypes) if (skill !== "woodcutting") wcCur.wearableMap[`/item_locations/${skill}_tool`] = `71::/item_locations/inventory::/items/${skill}_tool::8`;
+  wcCur.wearableMap["/item_locations/main_hand"] = "71::/item_locations/inventory::/items/sword::10"; // combat-only
+  wcCur.wearableMap["/item_locations/body"] = "71::/item_locations/inventory::/items/cheesesmithing_shirt::8"; // wrong life skill
+  wcCur.wearableMap["/item_locations/hands"] = "71::/item_locations/inventory::/items/enhancing_gloves::8"; // enhancingSuccess doesn't affect woodcutting
+  wcCur.wearableMap["/item_locations/trinket"] = "71::/item_locations/inventory::/items/task_badge::0";
+  assert.deepEqual(Core.diff(wcCur, Core.snapshot(wcTarget), { ignoreHarmlessEmpty: true, itemDetails }), []);
+  // Active skill stats & universal life stats & gatheringQuantity DO affect woodcutting -> MUST remind!
+  wcCur.wearableMap["/item_locations/body"] = "71::/item_locations/inventory::/items/woodcutting_shirt::8";
+  wcCur.wearableMap["/item_locations/neck"] = "71::/item_locations/inventory::/items/philosopher_neck::8";
+  wcCur.wearableMap["/item_locations/back"] = "71::/item_locations/inventory::/items/gathering_cloak::8";
+  assert.deepEqual(
+    Core.diff(wcCur, Core.snapshot(wcTarget), { ignoreHarmlessEmpty: true, itemDetails }).map(c => c.slot).sort(),
+    ["back", "body", "neck"]
+  );
+  // Active skill tool empty MUST still remind!
+  const wcNoToolTarget = structuredClone(wcTarget);
+  wcNoToolTarget.wearableMap = {};
+  assert.deepEqual(
+    Core.diff(wcTarget, Core.snapshot(wcNoToolTarget), { ignoreHarmlessEmpty: true, itemDetails }).map(c => c.slot),
+    ["woodcutting_tool"]
+  );
+  // All-skills loadout keeps all 10 tools when empty.
+  const allTarget = life(""), allCur = structuredClone(allTarget);
+  for (const skill of lifeTypes) allTarget.wearableMap[`/item_locations/${skill}_tool`] = "";
+  assert.equal(Core.diff(allCur, Core.snapshot(allTarget), { ignoreHarmlessEmpty: true, itemDetails }).length, 10);
+});

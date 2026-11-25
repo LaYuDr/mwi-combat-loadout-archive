@@ -299,9 +299,10 @@
     }, true);
   }
   function currentDiff(ctx, row) {
-    const key = `${ctx.scope}|${last}|${row.id}|${row.revision}`;
+    const itemDetails = app.Overview?.itemDetails?.() || null;
+    const key = `${ctx.scope}|${last}|${row.id}|${row.revision}|${itemDetails ? 1 : 0}`;
     if (key !== cachedDiffKey || !cachedDiff) {
-      cachedDiff = Core.diff(ctx.raw, row.snapshot);
+      cachedDiff = Core.diff(ctx.raw, row.snapshot, { ignoreHarmlessEmpty: true, itemDetails });
       cachedDiffKey = key;
     }
     return cachedDiff;
