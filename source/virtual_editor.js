@@ -87,7 +87,9 @@
     let data;
     try { data = JSON.parse(text); } catch (_) { throw Error("分享内容不是有效 JSON。"); }
     if (data?.format !== "mwi-virtual-loadout" || data.version !== 1) throw Error("请选择虚拟配装分享文件或粘贴分享内容。");
-    return { name: Core.name(data.name), snapshot: portable(data.snapshot, data.name) };
+    const rawName = [data.name, data.loadoutName, data.snapshot?.raw?.name].find(v => typeof v === "string" && v.trim());
+    const title = Core.name(rawName);
+    return { name: title, snapshot: portable(data.snapshot, title) };
   }
   function level(value, max) {
     if (String(value).trim() === "" || !Number.isInteger(Number(value)) || Number(value) < 0 || Number(value) > max)

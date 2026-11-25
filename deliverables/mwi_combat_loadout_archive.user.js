@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.13
+// @version      0.2.14
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
@@ -509,7 +509,7 @@
     return { dispose, report, client };
   }
   if (typeof module !== "undefined" && module.exports) module.exports = { createUsageClient, boot };
-  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.13","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
+  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.14","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
 setValue: typeof GM_setValue === "function" ? GM_setValue : null,
 listen: typeof GM_addValueChangeListener === "function" ? GM_addValueChangeListener : null,
 unlisten: typeof GM_removeValueChangeListener === "function" ? GM_removeValueChangeListener : null,
@@ -655,31 +655,45 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     if (!object(value) || value.schemaVersion !== 1) throw Error("子方案版本无法识别，请使用兼容版本。");
     return snapshot(value.raw);
   }
+  function pickSuggestedName(...candidates) {
+    for (const value of candidates) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (trimmed) return trimmed.slice(0, 60);
+    }
+    return "";
+  }
   function parseImport(text) {
     if (typeof text !== "string" || text.length > 5000000) throw Error("配装内容超过 5 MB，未导入。");
     let data;
     try { data = JSON.parse(text); } catch (_) { throw Error("配装内容不是有效 JSON，请重新粘贴或选择文件。"); }
-    const modern = (players, prefix = "", title = "") => {
+    const modern = (players, prefix = "", title = "", fallbackNames = []) => {
       if (!Array.isArray(players) || !players.length || players.length > 5 || players.some(player => !object(player)))
         throw Error("角色列表需要包含 1–5 个有效角色。");
       return players.map((player, index) => ({ key: `${prefix}${index + 1}`,
-        label: `${title}${String(player.name || `角色 ${index + 1}`).slice(0, 60)} · ${index + 1}`, player }));
+        label: `${title}${String(player.name || `角色 ${index + 1}`).slice(0, 60)} · ${index + 1}`, player,
+        suggestedName: pickSuggestedName(player.loadoutName, ...fallbackNames) }));
     };
     if (data?.format === "mwi-vue-solo" && data.version === 2 && object(data.player))
-      return [{ key: "solo", label: "当前角色", player: data.player }];
-    if (data?.version === 2 && data.format === "mwi-vue-group") return modern(data.players);
+      return [{ key: "solo", label: "当前角色", player: data.player,
+        suggestedName: pickSuggestedName(data.loadoutName, data.name, data.title, data.meta?.loadoutName) }];
+    if (data?.version === 2 && data.format === "mwi-vue-group")
+      return modern(data.players, "", "", [data.loadoutName, data.name, data.title, data.meta?.loadoutName]);
     if (data?.schemaVersion === 1 && data.kind === "combat-party-builds") {
       if (!Array.isArray(data.builds) || !data.builds.length || data.builds.length > 100)
         throw Error("整队方案文件需要包含 1–100 个方案。");
       return data.builds.flatMap((build, index) => {
         if (!object(build)) throw Error("整队方案结构不完整。");
-        return modern(build.players, `build-${index + 1}:`, `${String(build.name || `方案 ${index + 1}`).slice(0, 60)} / `);
+        return modern(build.players, `build-${index + 1}:`, `${String(build.name || `方案 ${index + 1}`).slice(0, 60)} / `,
+          [build.loadoutName, build.name, data.loadoutName]);
       });
     }
     // mwisim full simulation exports carry players together with results and targets.
     if (object(data) && Array.isArray(data.players) && Array.isArray(data.rows) &&
-        Array.isArray(data.targets) && object(data.simulationSettings)) return modern(data.players);
-    if (object(data?.levels) && object(data.equipment) && Array.isArray(data.abilities)) return modern([data]);
+        Array.isArray(data.targets) && object(data.simulationSettings))
+      return modern(data.players, "", "", [data.loadoutName, data.meta?.loadoutName]);
+    if (object(data?.levels) && object(data.equipment) && Array.isArray(data.abilities))
+      return modern([data], "", "", [data.loadoutName, data.meta?.loadoutName]);
     const legacy = (value, key) => {
       if (typeof value === "string") {
         try { value = JSON.parse(value); } catch (_) { throw Error(`角色 ${key} 的内容不是有效 JSON。`); }
@@ -715,7 +729,8 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       const nickname = typeof value.player.name === "string" ? value.player.name :
         typeof value.player.characterName === "string" ? value.player.characterName : "";
       return { key, label: nickname ? `${nickname.slice(0, 60)} · ${key}` : `角色 ${key}`, player: { name: nickname, equipment, abilities,
-        food: consumables("food"), drinks: consumables("drinks"), triggerMap: value.triggerMap } };
+        food: consumables("food"), drinks: consumables("drinks"), triggerMap: value.triggerMap },
+        suggestedName: pickSuggestedName(value.loadoutName, value.meta?.loadoutName, value.player.loadoutName) };
     };
     if (object(data?.player) && Array.isArray(data.player.equipment)) return [legacy(data, "1")];
     const keys = object(data) ? Object.keys(data) : [];
@@ -724,8 +739,8 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     return keys.sort().map(key => legacy(data[key], key));
   }
   function importChoices(text) {
-    return parseImport(text).map(({ key, label, player }) => ({ key, label,
-      nickname: typeof player.name === "string" ? player.name : "" }));
+    return parseImport(text).map(({ key, label, player, suggestedName = "" }) => ({ key, label,
+      nickname: typeof player.name === "string" ? player.name : "", suggestedName }));
   }
   function matchImportNickname(choices, nickname) {
     const normalize = value => typeof value === "string" ? value.trim().normalize("NFC") : "";
@@ -1016,12 +1031,18 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       ? props.slotNumber === change.slot
       : props.slotIndex === change.slot && props.consumableSlotTypeHrid === `/consumable_slot_types/${kind}`));
     if (candidates.length !== 1) return null;
-    if (change.kind.endsWith("_trigger")) return candidates[0].querySelector('[class*="CombatTriggersSetting_settingButton__"]') || candidates[0];
+    if (change.kind.endsWith("_trigger")) {
+      return candidates[0].querySelector('[class*="CombatTriggersSetting_settingButton__"]') ||
+        candidates[0].querySelector('[class*="CombatTriggersSetting_combatTriggersSetting__"]') ||
+        candidates[0];
+    }
     return candidates[0];
   }
   // Match only choices in a visible picker belonging to the changed native slot.
   // Item identity comes from component props, never translated labels or icon URLs.
   let lastPickerMatches = [];
+  const prefilledTriggerRows = new WeakMap();
+  const triggerFieldOrder = ["dependencyHrid", "conditionHrid", "comparatorHrid"];
   function pickerPath(scopeFiber, list) {
     const pending = scopeFiber ? [{ fiber: scopeFiber, parent: null }] : [], seen = new Set();
     for (let count = 0; pending.length && count < 30000; count++) {
@@ -1052,21 +1073,227 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     if (!item || item.itemHrid !== itemTarget.itemHrid) return false;
     return !Object.hasOwn(itemTarget, "enhancementLevel") || (item.enhancementLevel ?? 0) === itemTarget.enhancementLevel;
   }
-  function pickerTargets(ctx, changes) {
-    const result = [], matches = [];
-    const desired = changes.filter(change => change.to && ["equipment", "ability", "food", "drink"].includes(change.kind));
-    if (!desired.length) { lastPickerMatches = []; return result; }
-    const lists = [...document.querySelectorAll('[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"]')].filter(visible);
-    if (!lists.length) { lastPickerMatches = []; return result; }
-    // Host expandos may retain an alternate from before a popup opened or its
-    // filter changed. Traverse only the committed tree of this card's setup.
+  function resolveScope(ctx) {
     let scope = ctx.setup || ctx.panel;
-    if (!visible(scope)) { lastPickerMatches = []; return result; }
+    if (!visible(scope)) return null;
     let scopeFiber = hostFiber(scope, null, true);
     if (!scopeFiber && !ctx.overview && scope !== ctx.panel) {
       scope = ctx.panel;
       scopeFiber = hostFiber(scope, null, true);
     }
+    return { scope, scopeFiber };
+  }
+  function triggerRowText(ctx, trigger, includeValue = true) {
+    const parts = [
+      translate(ctx, "combatTriggerDependencyNames", trigger.dependencyHrid),
+      translate(ctx, "combatTriggerConditionNames", trigger.conditionHrid),
+      translate(ctx, "combatTriggerComparatorNames", trigger.comparatorHrid)
+    ];
+    if (includeValue) parts.push(String(trigger.value));
+    return parts.join(" · ");
+  }
+  function findOptionByValue(listbox, targetValue) {
+    const options = [...listbox.querySelectorAll('[role="option"], li')].filter(visible);
+    for (const option of options) {
+      if (option.dataset?.value === targetValue || option.getAttribute("data-value") === targetValue) return option;
+      const fiber = hostFiber(option);
+      let node = fiber;
+      for (let depth = 0; node && depth < 8; depth++, node = node.return) {
+        const props = node.memoizedProps || node.stateNode?.props;
+        if (props?.value === targetValue) return option;
+      }
+    }
+    return null;
+  }
+  function inspectTriggerMenus(ctx, changes, scope, scopeFiber, targets, prefilled, scrollTargets, guides) {
+    const menus = [...document.querySelectorAll('[class*="CombatTriggersSetting_combatTriggersEditMenu__"]')].filter(visible);
+    if (!menus.length) return;
+    const listboxes = [...document.querySelectorAll('ul[role="listbox"]')].filter(visible);
+    for (const editMenu of menus) {
+      const path = pickerPath(scopeFiber, editMenu);
+      if (!path) continue;
+      const editMenuFiber = path[0];
+      const ancestors = new Set();
+      let controller = null, ownerSlot = null;
+      for (const owner of path) {
+        ancestors.add(owner.stateNode);
+        if (!controller && owner.stateNode && Array.isArray(owner.stateNode.state?.combatTriggers) &&
+            typeof owner.stateNode.setState === "function") {
+          controller = owner.stateNode;
+        }
+        const props = owner.memoizedProps || owner.stateNode?.props;
+        if (!ownerSlot && props) {
+          if (Number.isInteger(props.slotNumber)) {
+            ownerSlot = { kind: "ability_trigger", baseKind: "ability", slot: props.slotNumber };
+          } else if (Number.isInteger(props.slotIndex) &&
+              ["/consumable_slot_types/food", "/consumable_slot_types/drink"].includes(props.consumableSlotTypeHrid)) {
+            const baseKind = props.consumableSlotTypeHrid.split("/").pop();
+            ownerSlot = { kind: `${baseKind}_trigger`, baseKind, slot: props.slotIndex };
+          }
+        }
+      }
+      if (!ancestors.has(scope) || !controller || !ownerSlot) continue;
+      const labelNode = editMenu.querySelector('[class*="CombatTriggersSetting_label__"]');
+      const baseChange = changes.find(change => change.kind === ownerSlot.baseKind && change.slot === ownerSlot.slot);
+      const triggerChange = changes.find(change => change.kind === ownerSlot.kind && change.slot === ownerSlot.slot);
+      if (baseChange) {
+        const goalName = describe(ctx, baseChange, baseChange.to);
+        guides.push({
+          host: editMenu, after: labelNode, kind: "trigger", state: "warn",
+          key: `base:${baseChange.kind}:${baseChange.slot}:${goalName}`,
+          title: `请先将槽位更换为「${goalName}」，再设置触发条件`
+        });
+        continue;
+      }
+      if (!triggerChange) continue;
+      const targetTriggers = Array.isArray(triggerChange.to) ? triggerChange.to : [];
+      const currentTriggers = controller.state.combatTriggers;
+      const rowEls = [...editMenu.querySelectorAll('[class*="CombatTriggersSetting_combatTrigger__"]')];
+      let rowMap = prefilledTriggerRows.get(editMenu);
+      if (!rowMap) { rowMap = new Map(); prefilledTriggerRows.set(editMenu, rowMap); }
+      const prefills = [], activePrefillRows = new Set();
+      for (let i = 0; i < Math.min(currentTriggers.length, targetTriggers.length); i++) {
+        const cur = currentTriggers[i], tgt = targetTriggers[i], rowEl = rowEls[i];
+        if (!cur || !tgt || !rowEl) continue;
+        if (cur.dependencyHrid !== tgt.dependencyHrid || cur.conditionHrid !== tgt.conditionHrid ||
+            cur.comparatorHrid !== tgt.comparatorHrid) continue;
+        const valInput = rowEl.querySelector('[class*="CombatTriggersSetting_valueInputContainer__"] input');
+        if (!valInput) continue;
+        const sig = `${ctx.scope}|${triggerChange.kind}|${triggerChange.slot}|${cur.dependencyHrid}|${cur.conditionHrid}|${cur.comparatorHrid}|${tgt.value}`;
+        const curEmpty = cur.value === "" || cur.value === null || cur.value === undefined;
+        const curMatches = !curEmpty && Number(cur.value) === Number(tgt.value);
+        if (!curMatches && rowMap.get(i) !== sig) {
+          rowMap.set(i, sig);
+          prefills.push({ index: i, value: tgt.value });
+          activePrefillRows.add(i);
+        } else if (curMatches && rowMap.get(i) === sig) {
+          activePrefillRows.add(i);
+        }
+      }
+      let effectiveTriggers = currentTriggers;
+      if (prefills.length) {
+        effectiveTriggers = currentTriggers.map((item, idx) => {
+          const hit = prefills.find(entry => entry.index === idx);
+          return hit ? { ...item, value: hit.value } : { ...item };
+        });
+        controller.setState({ combatTriggers: effectiveTriggers });
+      }
+      const guideRows = [];
+      let allRowsDone = effectiveTriggers.length === targetTriggers.length;
+      const openSelectTarget = { row: -1, field: null, controls: null };
+      for (let i = 0; i < Math.max(effectiveTriggers.length, targetTriggers.length); i++) {
+        const rowEl = rowEls[i];
+        const inputsWrap = rowEl?.querySelector('[class*="CombatTriggersSetting_inputs__"]');
+        const controls = inputsWrap ? [...inputsWrap.children] : [];
+        if (i < targetTriggers.length) {
+          const cur = effectiveTriggers[i], tgt = targetTriggers[i];
+          const valBox = rowEl?.querySelector('[class*="CombatTriggersSetting_valueInputContainer__"]');
+          const hasValInput = Boolean(valBox?.querySelector("input"));
+          const depOk = Boolean(cur && cur.dependencyHrid === tgt.dependencyHrid);
+          const condOk = depOk && cur.conditionHrid === tgt.conditionHrid;
+          const compOk = condOk && cur.comparatorHrid === tgt.comparatorHrid;
+          const curEmpty = !cur || cur.value === "" || cur.value === null || cur.value === undefined;
+          const valOk = compOk && (!hasValInput || (!curEmpty && Number(cur.value) === Number(tgt.value)));
+          const rowDone = depOk && condOk && compOk && valOk;
+          if (!rowDone) allRowsDone = false;
+          const showVal = !compOk || hasValInput;
+          guideRows.push({
+            text: `${i + 1}. ${triggerRowText(ctx, tgt, showVal)}`,
+            done: rowDone,
+            prefilled: Boolean(rowDone && hasValInput && activePrefillRows.has(i))
+          });
+          if (rowEl && !rowDone) {
+            if (!depOk && controls[0]) targets.push(controls[0]);
+            else if (!condOk && controls[1]) targets.push(controls[1]);
+            else if (!compOk && controls[2]) targets.push(controls[2]);
+            else if (!valOk && valBox) targets.push(valBox);
+          } else if (rowDone && hasValInput && activePrefillRows.has(i) && valBox) {
+            prefilled.push(valBox);
+          }
+          for (let cIdx = 0; cIdx < 3; cIdx++) {
+            const expanded = controls[cIdx]?.querySelector('[aria-expanded="true"]');
+            if (expanded) {
+              openSelectTarget.row = i;
+              openSelectTarget.field = triggerFieldOrder[cIdx];
+              openSelectTarget.controls = expanded.getAttribute("aria-controls") || "";
+            }
+          }
+        } else if (rowEl) {
+          allRowsDone = false;
+          const removeBtn = rowEl.querySelector('[class*="CombatTriggersSetting_removeButtonContainer__"] button') ||
+            rowEl.querySelector('[class*="CombatTriggersSetting_removeButtonContainer__"]');
+          if (removeBtn) targets.push(removeBtn);
+        }
+      }
+      if (effectiveTriggers.length < targetTriggers.length && effectiveTriggers.length < 4) {
+        const addBtn = editMenu.querySelector('[class*="CombatTriggersSetting_buttonContainer__"] button');
+        if (addBtn && !addBtn.disabled) targets.push(addBtn);
+      }
+      if (allRowsDone) {
+        const saveBtn = [...editMenu.children].find(node => node.tagName === "BUTTON" && !node.disabled);
+        if (saveBtn) targets.push(saveBtn);
+      }
+      for (const listbox of listboxes) {
+        let rowIdx = -1, field = null;
+        if (openSelectTarget.row >= 0 && openSelectTarget.field &&
+            (!openSelectTarget.controls || listbox.id === openSelectTarget.controls ||
+              listbox.closest(`[id="${openSelectTarget.controls.replace(/"/g, '\\"')}"]`) || listboxes.length === 1)) {
+          rowIdx = openSelectTarget.row;
+          field = openSelectTarget.field;
+        } else {
+          const lbPath = pickerPath(editMenuFiber, listbox);
+          if (lbPath) {
+            const lbAncestors = new Set(lbPath.map(f => f.stateNode));
+            for (let i = 0; i < rowEls.length && rowIdx < 0; i++) {
+              const inputsWrap = rowEls[i]?.querySelector('[class*="CombatTriggersSetting_inputs__"]');
+              const controls = inputsWrap ? [...inputsWrap.children] : [];
+              for (let cIdx = 0; cIdx < 3; cIdx++) {
+                if (controls[cIdx] && lbAncestors.has(controls[cIdx])) {
+                  rowIdx = i;
+                  field = triggerFieldOrder[cIdx];
+                  break;
+                }
+              }
+            }
+          }
+        }
+        if (rowIdx >= 0 && field && targetTriggers[rowIdx]?.[field]) {
+          const tgtVal = targetTriggers[rowIdx][field];
+          const option = findOptionByValue(listbox, tgtVal);
+          if (option) {
+            targets.push(option);
+            scrollTargets.push({ container: listbox, node: option, key: `opt:${rowIdx}:${field}:${tgtVal}` });
+          }
+        }
+      }
+      guides.push({
+        host: editMenu, after: labelNode, kind: "trigger",
+        state: allRowsDone ? "ready" : "guide",
+        key: JSON.stringify([allRowsDone, targetTriggers.length, guideRows]),
+        title: allRowsDone
+          ? "已与子方案一致，点击下方「保存」生效"
+          : targetTriggers.length ? "子方案目标触发条件" : "目标：冷却结束即使用（移除下方条件后保存）",
+        rows: guideRows
+      });
+    }
+  }
+  function pickerGuidance(ctx, changes) {
+    const targets = [], prefilled = [], scrollTargets = [], guides = [], matches = [];
+    const desired = changes.filter(change => ["equipment", "ability", "food", "drink"].includes(change.kind));
+    const lists = [...document.querySelectorAll('[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"]')].filter(visible);
+    const hasTriggerMenus = Boolean(document.querySelector('[class*="CombatTriggersSetting_combatTriggersEditMenu__"]'));
+    if ((!desired.length || !lists.length) && !hasTriggerMenus) {
+      lastPickerMatches = [];
+      return { targets, prefilled, scrollTargets, guides };
+    }
+    // Host expandos may retain an alternate from before a popup opened or its
+    // filter changed. Traverse only the committed tree of this card's setup.
+    const resolved = resolveScope(ctx);
+    if (!resolved) {
+      lastPickerMatches = [];
+      return { targets, prefilled, scrollTargets, guides };
+    }
+    const { scope, scopeFiber } = resolved;
     const changeKeys = new Set(desired.map(change => app.Core.stable(change)));
     for (const list of lists) {
       const ability = list.className.includes("AbilitySlot_");
@@ -1079,7 +1306,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
           if (prior.list === list && prior.scope === ctx.scope && prior.setup === scope && visible(scope) &&
               changeKeys.has(prior.changeKey) && prior.node.parentElement === list && visible(prior.node) &&
               prior.node.className === prior.className && prior.node.innerHTML === prior.html) {
-            result.push(prior.node); matches.push(prior);
+            targets.push(prior.node); matches.push(prior);
           }
         }
         continue;
@@ -1099,66 +1326,102 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         }
       }
       if (!ancestors.has(scope)) continue;
-      const matching = changes.filter(change => change.to &&
+      const matching = changes.filter(change =>
         (ability ? change.kind === "ability" : ["equipment", "food", "drink"].includes(change.kind)) &&
         (ownerSlot ? change.kind === ownerSlot.kind && change.slot === ownerSlot.slot : ancestors.has(target(ctx, change))));
       if (matching.length !== 1) continue;
       const change = matching[0];
-      const itemTarget = change.kind === "equipment" ? change.to : { itemHrid: change.to };
-      // Index direct choice elements without descending into their subtrees so
-      // large pickers (100+ items) never starve early options, and retain each
-      // choice's exclusive component wrappers strictly below listFiber.
-      const choiceSet = new Set(list.children), hosts = new Map(), wrapperUse = new Map();
-      const queue = listFiber?.child ? [{ fiber: listFiber.child, wrappers: [] }] : [], visited = new Set();
-      for (let count = 0; queue.length && count < 30000; count++) {
-        const { fiber, wrappers } = queue.pop(); if (!fiber || visited.has(fiber)) continue; visited.add(fiber);
-        if (fiber.sibling) queue.push({ fiber: fiber.sibling, wrappers });
-        if (fiber.stateNode?.nodeType === 1) {
-          if (choiceSet.has(fiber.stateNode)) {
-            hosts.set(fiber.stateNode, { fiber, wrappers });
-            for (const wrapper of wrappers) wrapperUse.set(wrapper, (wrapperUse.get(wrapper) || 0) + 1);
-            continue;
+      const changeKey = app.Core.stable(change);
+      let matchedAny = false, blockedMatch = false;
+      if (change.to === null) {
+        for (const choice of list.children) {
+          if (!visible(choice)) continue;
+          if (/removeButton/.test(choice.className)) {
+            matchedAny = true;
+            targets.push(choice);
+            scrollTargets.push({ container: list, node: choice, key: changeKey });
+            matches.push({ node: choice, list, scope: ctx.scope, setup: scope,
+              changeKey, className: choice.className, html: choice.innerHTML });
           }
-          if (fiber.stateNode.namespaceURI === "http://www.w3.org/2000/svg") continue;
         }
-        if (fiber.child) {
-          const nextWrappers = fiber.stateNode?.nodeType === 1 ? wrappers : [...wrappers, fiber];
-          queue.push({ fiber: fiber.child, wrappers: nextWrappers });
-        }
-      }
-      const multi = list.children.length > 1;
-      for (const choice of list.children) {
-        if (!visible(choice) || /insufficient|requirementsNotMet/.test(choice.className)) continue;
-        const entry = hosts.get(choice);
-        let match = false;
-        if (entry) {
-          for (const wrapper of entry.wrappers) {
-            if (multi && (wrapperUse.get(wrapper) || 0) > 1) continue;
-            if (matchesChoice(wrapper.memoizedProps || wrapper.stateNode?.props, ability, change, itemTarget)) {
-              match = true; break;
+      } else {
+        const itemTarget = change.kind === "equipment" ? change.to : { itemHrid: change.to };
+        // Index direct choice elements without descending into their subtrees so
+        // large pickers (100+ items) never starve early options, and retain each
+        // choice's exclusive component wrappers strictly below listFiber.
+        const choiceSet = new Set(list.children), hosts = new Map(), wrapperUse = new Map();
+        const queue = listFiber?.child ? [{ fiber: listFiber.child, wrappers: [] }] : [], visited = new Set();
+        for (let count = 0; queue.length && count < 30000; count++) {
+          const { fiber, wrappers } = queue.pop(); if (!fiber || visited.has(fiber)) continue; visited.add(fiber);
+          if (fiber.sibling) queue.push({ fiber: fiber.sibling, wrappers });
+          if (fiber.stateNode?.nodeType === 1) {
+            if (choiceSet.has(fiber.stateNode)) {
+              hosts.set(fiber.stateNode, { fiber, wrappers });
+              for (const wrapper of wrappers) wrapperUse.set(wrapper, (wrapperUse.get(wrapper) || 0) + 1);
+              continue;
             }
+            if (fiber.stateNode.namespaceURI === "http://www.w3.org/2000/svg") continue;
           }
-          if (!match) {
-            const first = entry.fiber, pending = [first], seen = new Set();
-            for (let count = 0; pending.length && count < 400; count++) {
-              const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue; seen.add(fiber);
-              if (matchesChoice(fiber.memoizedProps || fiber.stateNode?.props, ability, change, itemTarget)) {
+          if (fiber.child) {
+            const nextWrappers = fiber.stateNode?.nodeType === 1 ? wrappers : [...wrappers, fiber];
+            queue.push({ fiber: fiber.child, wrappers: nextWrappers });
+          }
+        }
+        const multi = list.children.length > 1;
+        for (const choice of list.children) {
+          if (!visible(choice)) continue;
+          const disabledChoice = /insufficient|requirementsNotMet/.test(choice.className);
+          const entry = hosts.get(choice);
+          let match = false;
+          if (entry) {
+            for (const wrapper of entry.wrappers) {
+              if (multi && (wrapperUse.get(wrapper) || 0) > 1) continue;
+              if (matchesChoice(wrapper.memoizedProps || wrapper.stateNode?.props, ability, change, itemTarget)) {
                 match = true; break;
               }
-              if (fiber.child && fiber.stateNode?.namespaceURI !== "http://www.w3.org/2000/svg") pending.push(fiber.child);
-              if (fiber !== first && fiber.sibling) pending.push(fiber.sibling);
+            }
+            if (!match) {
+              const first = entry.fiber, pending = [first], seen = new Set();
+              for (let count = 0; pending.length && count < 400; count++) {
+                const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue; seen.add(fiber);
+                if (matchesChoice(fiber.memoizedProps || fiber.stateNode?.props, ability, change, itemTarget)) {
+                  match = true; break;
+                }
+                if (fiber.child && fiber.stateNode?.namespaceURI !== "http://www.w3.org/2000/svg") pending.push(fiber.child);
+                if (fiber !== first && fiber.sibling) pending.push(fiber.sibling);
+              }
             }
           }
+          if (match) {
+            if (disabledChoice) { blockedMatch = true; continue; }
+            matchedAny = true;
+            targets.push(choice);
+            scrollTargets.push({ container: list, node: choice, key: changeKey });
+            matches.push({ node: choice, list, scope: ctx.scope, setup: scope,
+              changeKey, className: choice.className, html: choice.innerHTML });
+          }
         }
-        if (match) {
-          result.push(choice);
-          matches.push({ node: choice, list, scope: ctx.scope, setup: scope,
-            changeKey: app.Core.stable(change), className: choice.className, html: choice.innerHTML });
-        }
+      }
+      const menuHost = list.closest('[class*="ItemSelector_menu__"], [class*="AbilitySlot_abilitySelector__"]');
+      if (menuHost) {
+        const goalLabel = change.to === null ? "清空槽位（点「移除」）" : describe(ctx, change, change.to);
+        const title = matchedAny
+          ? `目标：${goalLabel}`
+          : `目标：${goalLabel}（${blockedMatch ? "数量不足或未满足等级要求" : "当前列表暂无可选项"}）`;
+        guides.push({
+          host: menuHost, after: null, kind: "picker",
+          state: matchedAny ? "guide" : "warn",
+          key: `${changeKey}:${matchedAny}:${blockedMatch}:${title}`,
+          title
+        });
       }
     }
     lastPickerMatches = matches;
-    return result;
+    if (hasTriggerMenus) inspectTriggerMenus(ctx, changes, scope, scopeFiber, targets, prefilled, scrollTargets, guides);
+    return { targets, prefilled, scrollTargets, guides };
+  }
+  function pickerTargets(ctx, changes) {
+    return pickerGuidance(ctx, changes).targets;
   }
   function actionContexts() {
     const contexts = [];
@@ -1226,7 +1489,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       throw Error("当前原生配装尚未完整加载，请稍后重试。");
     return app.Core.snapshot(ctx.loadouts[id]);
   }
-  app.Adapter = Object.freeze({ currentCharacterName, nativeSnapshot, cloudContext, current, describe, target, pickerTargets, actionContexts, visibleLoadoutPanel, loadoutController });
+  app.Adapter = Object.freeze({ currentCharacterName, nativeSnapshot, cloudContext, current, describe, target, pickerTargets, pickerGuidance, actionContexts, visibleLoadoutPanel, loadoutController });
 })(globalThis);
 
 // ---- scene_store.js ----
@@ -2354,7 +2617,8 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
           attempted: 0, error: ""
         };
       }
-      const title = app.Core.name(item.name);
+      const rawTitle = [item.name, item.loadoutName, item.snapshot?.raw?.name].find(v => typeof v === "string" && v.trim());
+      const title = app.Core.name(rawTitle);
       const snapshot = portableSnapshot(item.snapshot, title);
       return {
         key: scope + "|" + crypto.randomUUID(), token: crypto.randomUUID(), owner: scope, board: null,
@@ -2603,7 +2867,9 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     let data;
     try { data = JSON.parse(text); } catch (_) { throw Error("分享内容不是有效 JSON。"); }
     if (data?.format !== "mwi-virtual-loadout" || data.version !== 1) throw Error("请选择虚拟配装分享文件或粘贴分享内容。");
-    return { name: Core.name(data.name), snapshot: portable(data.snapshot, data.name) };
+    const rawName = [data.name, data.loadoutName, data.snapshot?.raw?.name].find(v => typeof v === "string" && v.trim());
+    const title = Core.name(rawName);
+    return { name: title, snapshot: portable(data.snapshot, title) };
   }
   function level(value, max) {
     if (String(value).trim() === "" || !Number.isInteger(Number(value)) || Number(value) < 0 || Number(value) > max)
@@ -4801,13 +5067,13 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
   if (app.started) return;
   app.started = true;
   const { Core, Adapter, Store } = app;
-  const css = ":host {\n  display: block;\n  width: 21.25rem;\n  max-width: 100%;\n  min-width: 0;\n  text-align: left;\n  color: #eef0f8;\n  font: inherit;\n  font-size: 13px;\n  line-height: 1.45;\n  --scene-bg: #151824;\n  --scene-inset: #11141d;\n  --scene-surface: rgba(255, 255, 255, 0.05);\n  --scene-surface-hover: rgba(255, 255, 255, 0.1);\n  --scene-line: rgba(255, 255, 255, 0.075);\n  --scene-line-soft: rgba(255, 255, 255, 0.05);\n  --scene-line-strong: rgba(255, 255, 255, 0.14);\n  --scene-primary: #4c63c4;\n  --scene-primary-hover: #5a72d4;\n  --scene-muted: #969db8;\n  --scene-faint: #6c7391;\n  --scene-warn: #f2c46d;\n  --scene-ok: #6ad89a;\n  --scene-danger: #ec868e;\n  --scene-danger-bg: rgba(236, 134, 142, 0.14);\n  --scene-ease: cubic-bezier(0.16, 1, 0.3, 1);\n}\n* { box-sizing: border-box; }\n.sr-only {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  margin: -1px;\n  overflow: hidden;\n  clip: rect(0, 0, 0, 0);\n  white-space: nowrap;\n  border: 0;\n}\n\nsection {\n  overflow-wrap: anywhere;\n  margin: 10px 0 12px;\n  padding: 10px;\n  background: var(--scene-bg);\n  border: 1px solid var(--scene-line);\n  border-radius: 8px;\n}\n:host([data-overview]) { width: 100%; }\n:host([data-overview]) section {\n  margin: 0;\n  padding: 6px 10px 10px;\n  border: 0;\n  border-radius: 0;\n  border-bottom: 1px solid var(--scene-line);\n}\n\np { margin: 0; line-height: 1.45; }\n\n/* Minimal Underline Tabs Header */\n.header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 6px;\n  margin-bottom: 8px;\n  border-bottom: 1px solid var(--scene-line-soft);\n}\n.tabs {\n  display: inline-flex;\n  align-items: center;\n  gap: 2px;\n  min-width: 0;\n}\n.tab {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  min-height: 30px;\n  padding: 4px 10px 6px;\n  margin-bottom: -1px;\n  border: 0;\n  border-bottom: 2px solid transparent;\n  border-radius: 4px 4px 0 0;\n  background: transparent;\n  color: var(--scene-muted);\n  font-weight: 500;\n  white-space: nowrap;\n  transition: color .14s ease, border-color .14s var(--scene-ease), background-color .14s ease;\n}\n.tab:hover { color: #eef0f8; background: rgba(255, 255, 255, 0.04); border-bottom-color: transparent; }\n.tab[aria-selected=\"true\"] {\n  color: #ffffff;\n  background: transparent;\n  border-bottom-color: #7d95f5;\n}\n.tab.has-warning { color: var(--scene-warn); }\n.tab-dot, .cloud-dot, .active-dot {\n  width: 6px;\n  height: 6px;\n  border-radius: 50%;\n  flex: 0 0 6px;\n  background: var(--scene-faint);\n}\n.tab-dot[data-state=\"warn\"], .cloud-dot[data-state=\"warn\"] { background: var(--scene-warn); }\n.tab-dot[data-state=\"busy\"], .cloud-dot[data-state=\"busy\"] { background: #70b7ff; }\n.cloud-dot[data-state=\"ok\"] { background: var(--scene-ok); }\n\n.header-actions {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  flex: 0 0 auto;\n  padding-bottom: 2px;\n}\n\n/* Base Controls */\nbutton, input, textarea, select {\n  font: inherit;\n  border-radius: 6px;\n}\nbutton {\n  color: inherit;\n  background: var(--scene-surface);\n  border: 1px solid var(--scene-line);\n  padding: 4px 10px;\n  min-height: 30px;\n  cursor: pointer;\n  text-align: start;\n  max-width: 100%;\n  min-width: 0;\n  overflow-wrap: anywhere;\n  transition: background-color .14s var(--scene-ease), border-color .14s var(--scene-ease), color .14s ease;\n}\nbutton:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: var(--scene-line-strong);\n  color: #ffffff;\n}\nbutton[aria-pressed=\"true\"], button.primary {\n  background: var(--scene-primary);\n  border-color: rgba(142, 164, 255, 0.42);\n  color: #ffffff;\n}\nbutton.primary:hover:not(:disabled) {\n  background: var(--scene-primary-hover);\n  border-color: rgba(158, 178, 255, 0.65);\n}\nbutton.danger {\n  background: var(--scene-danger-bg);\n  border-color: rgba(236, 134, 142, 0.5);\n  color: var(--scene-danger);\n}\nbutton.danger:hover:not(:disabled) { background: rgba(236, 134, 142, 0.24); }\nbutton.danger-text { color: var(--scene-danger); }\nbutton.danger-hover:hover:not(:disabled) {\n  color: var(--scene-danger);\n  background: var(--scene-danger-bg);\n  border-color: transparent;\n}\nbutton:disabled { opacity: .45; cursor: not-allowed; }\nbutton:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible, li:focus, a:focus-visible {\n  outline: 2px solid #9ecfff;\n  outline-offset: 2px;\n}\n\n.icon-btn {\n  width: 28px;\n  min-height: 28px;\n  padding: 0;\n  flex: 0 0 28px;\n  display: inline-grid;\n  place-items: center;\n  background: transparent;\n  border-color: transparent;\n  color: var(--scene-muted);\n}\n.icon-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.compact-btn {\n  min-height: 28px;\n  padding: 3px 9px;\n  font-size: 0.92em;\n  font-weight: 500;\n  white-space: nowrap;\n  text-align: center;\n}\n.ghost-btn {\n  background: transparent;\n  border-color: transparent;\n  color: var(--scene-muted);\n  padding: 3px 8px;\n}\n.ghost-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.copy-btn {\n  min-width: 5.5em;\n  text-align: center;\n}\nbutton.is-copied,\nbutton.is-copied:hover:not(:disabled) {\n  color: var(--scene-ok);\n}\nbutton.primary.is-copied,\nbutton.primary.is-copied:hover:not(:disabled) {\n  background: rgba(106, 216, 154, 0.22);\n  border-color: rgba(106, 216, 154, 0.55);\n  color: #d8fbe6;\n}\nsvg {\n  width: 14px;\n  height: 14px;\n  fill: none;\n  stroke: currentColor;\n  stroke-width: 1.7;\n  stroke-linecap: round;\n  stroke-linejoin: round;\n}\n\ninput, textarea, select {\n  color: #eef0f8;\n  background: var(--scene-inset);\n  border: 1px solid var(--scene-line-strong);\n  padding: 5px 9px;\n  min-height: 30px;\n  min-width: 0;\n  width: 100%;\n  caret-color: #9ecfff;\n  transition: border-color .14s ease;\n}\ninput::placeholder, textarea::placeholder { color: var(--scene-faint); }\ntextarea { resize: vertical; }\n\n/* Simulator Export & Multi-Player Import */\n.import-match-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 6px;\n}\n.import-choice-row { display: grid; gap: 4px; }\n.sim-export { gap: 8px; }\n.simulator-source, .simulator-targets {\n  min-width: 0;\n  margin: 0;\n  padding: 0;\n  border: 0;\n}\n.simulator-source legend, .simulator-targets legend {\n  margin-bottom: 5px;\n  padding: 0;\n  font-size: 0.85em;\n  color: var(--scene-faint);\n}\n.sim-source-chips {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 4px;\n  max-height: 108px;\n  overflow-y: auto;\n}\n.sim-chip {\n  min-height: 26px;\n  padding: 2px 9px;\n  font-size: 0.9em;\n  border-radius: 5px;\n  border-color: transparent;\n  background: rgba(255, 255, 255, 0.04);\n  color: var(--scene-muted);\n}\n.sim-chip:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.sim-target-grid {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);\n  gap: 2px;\n  background: var(--scene-inset);\n  border: 1px solid var(--scene-line);\n  border-radius: 6px;\n  padding: 3px;\n}\n.simulator-export-target {\n  display: flex;\n  align-items: baseline;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 2px 8px;\n  width: 100%;\n  min-height: 30px;\n  padding: 4px 8px;\n  border: 0;\n  border-radius: 4px;\n  background: transparent;\n  text-align: left;\n}\n.simulator-export-target:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n}\n.simulator-export-target small {\n  color: var(--scene-faint);\n  font-size: 0.82em;\n  overflow-wrap: anywhere;\n}\n.simulator-export-target[aria-pressed=\"true\"] small { color: #d9e2ff; }\n.sim-result {\n  display: grid;\n  gap: 6px;\n  padding-top: 8px;\n  border-top: 1px solid var(--scene-line-soft);\n}\n.sim-route { font-size: 0.9em; color: #e4e7f7; }\n.sim-warn { font-size: 0.85em; color: var(--scene-warn); }\n\n/* Scene Chips Row */\n.choices {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 5px;\n}\n.choice-chip {\n  min-height: 30px;\n  padding: 4px 10px;\n  border-radius: 6px;\n  background: rgba(255, 255, 255, 0.045);\n  border-color: var(--scene-line);\n  -webkit-touch-callout: none;\n  user-select: none;\n}\n.add-btn {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  gap: 4px;\n  min-height: 30px;\n  padding: 4px 8px;\n  border-radius: 6px;\n  border-color: transparent;\n  background: transparent;\n  color: var(--scene-muted);\n  white-space: nowrap;\n}\n.add-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.add-btn.compact-icon {\n  width: 30px;\n  padding: 0;\n  flex: 0 0 30px;\n}\n.add-btn.compact-icon .add-label { display: none; }\n.import-btn {\n  min-height: 30px;\n  padding: 4px 8px;\n  border-radius: 6px;\n  border-color: transparent;\n  background: transparent;\n  color: var(--scene-muted);\n  white-space: nowrap;\n}\n.import-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.empty { color: var(--scene-faint); font-size: 0.92em; margin-inline-end: 2px; }\n.muted { color: var(--scene-muted); font-size: 0.9em; }\n\n/* Contextual Active Scene Panel */\n.active-scene {\n  margin-top: 8px;\n  padding: 7px 9px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px solid var(--scene-line-soft);\n  border-inline-start: 2px solid var(--scene-ok);\n  border-radius: 6px;\n}\n.active-scene[data-state=\"diff\"] { border-inline-start-color: var(--scene-warn); }\n.active-head {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n.diff-toggle {\n  flex: 1 1 auto;\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 5px;\n  min-height: 26px;\n  padding: 2px 4px;\n  margin: -2px 0 -2px -4px;\n  border: 0;\n  background: transparent;\n  text-align: start;\n}\n.diff-toggle:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); border: 0; }\n.diff-toggle:disabled { opacity: 1; cursor: default; }\n.active-dot { background: var(--scene-ok); }\n.active-scene[data-state=\"diff\"] .active-dot { background: var(--scene-warn); }\n.active-name { font-weight: 600; color: #eef0f8; }\n.active-sep { color: var(--scene-faint); }\n#summary { color: var(--scene-ok); font-weight: 500; }\n#summary.pending { color: var(--scene-warn); }\n.diff-caret {\n  display: inline-flex;\n  color: var(--scene-faint);\n  transition: transform .15s var(--scene-ease);\n}\n.active-scene.diff-open .diff-caret { transform: rotate(180deg); }\n\n.active-actions {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 6px;\n  margin-top: 5px;\n  padding-top: 5px;\n  border-top: 1px solid var(--scene-line-soft);\n}\n.active-actions-left, .active-actions-right {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n.active-actions-right { margin-inline-start: auto; gap: 4px; }\n.update-button {\n  width: calc(4em + 24px);\n  flex: 0 0 auto;\n  text-align: center;\n}\n\n/* Difference List */\n.diff-panel {\n  margin-top: 7px;\n  padding-top: 6px;\n  border-top: 1px solid var(--scene-line-soft);\n}\nol { list-style: none; padding: 0; margin: 0; }\nli {\n  padding: 6px 0;\n  border-bottom: 1px solid var(--scene-line-soft);\n  overflow-wrap: anywhere;\n}\nli:last-child { border-bottom: 0; padding-bottom: 0; }\n.change-title {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin-bottom: 2px;\n}\n.change-title strong { flex: 1; font-weight: 500; color: #eef0f8; }\n.change-title button {\n  min-height: 24px;\n  border: 0;\n  background: transparent;\n  padding: 2px 6px;\n  color: #9ecfff;\n  font-size: 0.9em;\n}\n.change-title button:hover { background: rgba(158, 207, 255, 0.12); border: 0; }\n.unlocated-tag { color: var(--scene-warn); font-size: 0.85em; }\n.values {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);\n  gap: 6px;\n  font-size: 0.92em;\n}\n.values .current { color: var(--scene-muted); }\n.values .arrow { color: var(--scene-faint); }\n.values .goal { color: var(--scene-warn); }\ndetails summary {\n  padding: 4px 0;\n  cursor: pointer;\n  color: var(--scene-muted);\n  font-size: 0.9em;\n}\npre {\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  font-size: 0.84em;\n  padding: 7px 8px;\n  margin: 4px 0 0;\n  background: var(--scene-inset);\n  border-radius: 5px;\n}\n\n/* Inline Editors & Overflow Menu */\n.editor {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);\n  gap: 7px;\n  margin-top: 8px;\n  padding: 8px 9px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px solid var(--scene-line);\n  border-radius: 7px;\n}\n.editor-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 6px;\n}\n.editor-title {\n  font-size: 0.92em;\n  font-weight: 500;\n  color: #eef0f8;\n}\n.inline-form-row {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 5px;\n}\n.inline-form-row input { flex: 1 1 140px; }\n.actions {\n  display: flex;\n  align-items: center;\n  justify-content: flex-end;\n  flex-wrap: wrap;\n  gap: 5px;\n}\n.split-actions { justify-content: space-between; }\n\n.menu {\n  display: grid;\n  gap: 5px;\n  margin-bottom: 8px;\n  padding: 5px;\n  background: #1c2030;\n  border: 1px solid var(--scene-line-strong);\n  border-radius: 7px;\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);\n}\n.menu-group {\n  display: grid;\n  gap: 3px;\n  padding-bottom: 5px;\n  border-bottom: 1px solid var(--scene-line);\n}\n.menu-label {\n  font-size: 0.82em;\n  color: var(--scene-faint);\n  padding: 2px 7px 0;\n}\n.menu-grid {\n  display: grid;\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n  gap: 2px;\n}\n.menu button {\n  background: transparent;\n  border-color: transparent;\n  min-height: 30px;\n  padding: 4px 8px;\n  font-size: 0.92em;\n  color: #d9ddf0;\n}\n.menu button:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.menu button.danger-text { color: var(--scene-danger); }\n.menu button.danger-text:hover:not(:disabled) { background: var(--scene-danger-bg); color: var(--scene-danger); }\n\n/* Notice / Undo / Error — Non-shifting Floating Toast */\n.notice,\n.cloud-feedback {\n  position: fixed;\n  inset: auto 18px 20px auto;\n  z-index: 99990;\n  max-width: min(360px, calc(100vw - 36px));\n  margin: 0;\n  padding: 7px 11px;\n  background: #191d2c;\n  border: 1px solid var(--scene-line-strong);\n  border-radius: 8px;\n  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);\n  font-size: 0.9em;\n  color: #eef0f8;\n}\n.notice {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 6px;\n}\n#status { flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; }\n#status.error,\n.cloud-feedback.is-error { color: var(--scene-warn); }\n\n/* Cloud Sync Pane */\n.cloud-panel { display: grid; gap: 7px; }\n.cloud-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 6px;\n}\n.cloud-status {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  font-weight: 500;\n  min-width: 0;\n}\n.cloud-status.cloud-warning, .cloud-note, .cloud-compare-title { color: var(--scene-warn); }\n.cloud-note { font-size: 0.9em; }\n.cloud-feedback { color: var(--scene-ok); }\n.cloud-actions { display: flex; flex-wrap: wrap; gap: 4px; }\n.cloud-stats {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 4px 10px;\n  padding: 4px 0;\n  font-size: 0.86em;\n  color: var(--scene-muted);\n}\n.cloud-stat-time {\n  margin-inline-start: auto;\n  color: var(--scene-faint);\n  font-variant-numeric: tabular-nums;\n}\n.cloud-compare {\n  display: grid;\n  gap: 6px;\n  padding: 8px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px solid var(--scene-line);\n  border-radius: 6px;\n}\n.cloud-compare-alert { border-inline-start: 2px solid var(--scene-warn); }\n.cloud-compare > summary { font-weight: 500; color: var(--scene-warn); padding: 0; }\n.cloud-facts {\n  display: grid;\n  grid-template-columns: max-content minmax(0, 1fr);\n  gap: 4px 10px;\n  margin: 0;\n  font-size: 0.88em;\n}\n.cloud-facts dt { color: var(--scene-faint); }\n.cloud-facts dd { margin: 0; }\n.cloud-diff { list-style: none; margin: 4px 0 0; padding: 0; font-size: 0.9em; }\n.cloud-diff li { padding: 5px 0; }\n.cloud-diff li div { color: var(--scene-muted); }\n.cloud-confirm {\n  display: grid;\n  gap: 6px;\n  border-inline-start: 2px solid var(--scene-warn);\n  padding-inline-start: 8px;\n  font-size: 0.9em;\n}\n.cloud-tech { border-top: 1px solid var(--scene-line-soft); padding-top: 6px; }\n.cloud-tech-body { display: grid; gap: 3px; font-size: 0.86em; }\n.cloud-link-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }\n.cloud-panel a { color: #9ecfff; overflow-wrap: anywhere; text-decoration: none; }\n.cloud-panel a:hover { text-decoration: underline; }\n.cloud-privacy { color: var(--scene-faint); }\n\n/* Slot Markers */\n:host([data-mwi-scene-marker]) {\n  display: block;\n  width: 100%;\n  max-width: 100%;\n  margin-top: 4px;\n  color: #ffe09c;\n  font: 11px/1.36 -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif;\n}\n.target-markers {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);\n  gap: 2px;\n  overflow-wrap: anywhere;\n}\n.target-value {\n  display: block;\n  padding: 1px 3px;\n  border-radius: 3px;\n  background: rgba(255, 190, 79, 0.16);\n  color: #ffe3a8;\n  font-weight: 600;\n}\n.target-condition {\n  color: #ffe09c;\n  border: 0;\n  border-radius: 3px;\n  padding: 2px 3px;\n  min-height: 24px;\n  width: 100%;\n  font: inherit;\n  font-weight: 500;\n  text-align: start;\n  background: rgba(255, 190, 79, 0.12);\n  text-decoration: underline;\n  text-underline-offset: 2px;\n}\n\n[hidden] { display: none !important; }\n::selection { background: #4c63c4; color: #fff; }\n* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.16) transparent; }\n@media (pointer: coarse) {\n  button, .tab, .icon-btn, .compact-btn, .choice-chip, .add-btn, .import-btn { min-height: 40px; }\n  .icon-btn { width: 40px; flex-basis: 40px; }\n}\n@media (max-width: 420px) {\n  .menu-grid { grid-template-columns: minmax(0, 1fr); }\n}\n@media (prefers-reduced-motion: reduce) {\n  * { scroll-behavior: auto !important; transition: none !important; }\n}\n";
+  const css = ":host {\n  display: block;\n  width: 21.25rem;\n  max-width: 100%;\n  min-width: 0;\n  text-align: left;\n  color: #eef0f8;\n  font: inherit;\n  font-size: 13px;\n  line-height: 1.45;\n  --scene-bg: #151824;\n  --scene-inset: #11141d;\n  --scene-surface: rgba(255, 255, 255, 0.05);\n  --scene-surface-hover: rgba(255, 255, 255, 0.1);\n  --scene-line: rgba(255, 255, 255, 0.075);\n  --scene-line-soft: rgba(255, 255, 255, 0.05);\n  --scene-line-strong: rgba(255, 255, 255, 0.14);\n  --scene-primary: #4c63c4;\n  --scene-primary-hover: #5a72d4;\n  --scene-muted: #969db8;\n  --scene-faint: #6c7391;\n  --scene-warn: #f2c46d;\n  --scene-ok: #6ad89a;\n  --scene-danger: #ec868e;\n  --scene-danger-bg: rgba(236, 134, 142, 0.14);\n  --scene-ease: cubic-bezier(0.16, 1, 0.3, 1);\n}\n* { box-sizing: border-box; }\n.sr-only {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  margin: -1px;\n  overflow: hidden;\n  clip: rect(0, 0, 0, 0);\n  white-space: nowrap;\n  border: 0;\n}\n\nsection {\n  overflow-wrap: anywhere;\n  margin: 10px 0 12px;\n  padding: 10px;\n  background: var(--scene-bg);\n  border: 1px solid var(--scene-line);\n  border-radius: 8px;\n}\n:host([data-overview]) { width: 100%; }\n:host([data-overview]) section {\n  margin: 0;\n  padding: 6px 10px 10px;\n  border: 0;\n  border-radius: 0;\n  border-bottom: 1px solid var(--scene-line);\n}\n\np { margin: 0; line-height: 1.45; }\n\n/* Minimal Underline Tabs Header */\n.header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 6px;\n  margin-bottom: 8px;\n  border-bottom: 1px solid var(--scene-line-soft);\n}\n.tabs {\n  display: inline-flex;\n  align-items: center;\n  gap: 2px;\n  min-width: 0;\n}\n.tab {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  min-height: 30px;\n  padding: 4px 10px 6px;\n  margin-bottom: -1px;\n  border: 0;\n  border-bottom: 2px solid transparent;\n  border-radius: 4px 4px 0 0;\n  background: transparent;\n  color: var(--scene-muted);\n  font-weight: 500;\n  white-space: nowrap;\n  transition: color .14s ease, border-color .14s var(--scene-ease), background-color .14s ease;\n}\n.tab:hover { color: #eef0f8; background: rgba(255, 255, 255, 0.04); border-bottom-color: transparent; }\n.tab[aria-selected=\"true\"] {\n  color: #ffffff;\n  background: transparent;\n  border-bottom-color: #7d95f5;\n}\n.tab.has-warning { color: var(--scene-warn); }\n.tab-dot, .cloud-dot, .active-dot {\n  width: 6px;\n  height: 6px;\n  border-radius: 50%;\n  flex: 0 0 6px;\n  background: var(--scene-faint);\n}\n.tab-dot[data-state=\"warn\"], .cloud-dot[data-state=\"warn\"] { background: var(--scene-warn); }\n.tab-dot[data-state=\"busy\"], .cloud-dot[data-state=\"busy\"] { background: #70b7ff; }\n.cloud-dot[data-state=\"ok\"] { background: var(--scene-ok); }\n\n.header-actions {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  flex: 0 0 auto;\n  padding-bottom: 2px;\n}\n\n/* Base Controls */\nbutton, input, textarea, select {\n  font: inherit;\n  border-radius: 6px;\n}\nbutton {\n  color: inherit;\n  background: var(--scene-surface);\n  border: 1px solid var(--scene-line);\n  padding: 4px 10px;\n  min-height: 30px;\n  cursor: pointer;\n  text-align: start;\n  max-width: 100%;\n  min-width: 0;\n  overflow-wrap: anywhere;\n  transition: background-color .14s var(--scene-ease), border-color .14s var(--scene-ease), color .14s ease;\n}\nbutton:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: var(--scene-line-strong);\n  color: #ffffff;\n}\nbutton[aria-pressed=\"true\"], button.primary {\n  background: var(--scene-primary);\n  border-color: rgba(142, 164, 255, 0.42);\n  color: #ffffff;\n}\nbutton.primary:hover:not(:disabled) {\n  background: var(--scene-primary-hover);\n  border-color: rgba(158, 178, 255, 0.65);\n}\nbutton.danger {\n  background: var(--scene-danger-bg);\n  border-color: rgba(236, 134, 142, 0.5);\n  color: var(--scene-danger);\n}\nbutton.danger:hover:not(:disabled) { background: rgba(236, 134, 142, 0.24); }\nbutton.danger-text { color: var(--scene-danger); }\nbutton.danger-hover:hover:not(:disabled) {\n  color: var(--scene-danger);\n  background: var(--scene-danger-bg);\n  border-color: transparent;\n}\nbutton:disabled { opacity: .45; cursor: not-allowed; }\nbutton:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible, li:focus, a:focus-visible {\n  outline: 2px solid #9ecfff;\n  outline-offset: 2px;\n}\n\n.icon-btn {\n  width: 28px;\n  min-height: 28px;\n  padding: 0;\n  flex: 0 0 28px;\n  display: inline-grid;\n  place-items: center;\n  background: transparent;\n  border-color: transparent;\n  color: var(--scene-muted);\n}\n.icon-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.compact-btn {\n  min-height: 28px;\n  padding: 3px 9px;\n  font-size: 0.92em;\n  font-weight: 500;\n  white-space: nowrap;\n  text-align: center;\n}\n.ghost-btn {\n  background: transparent;\n  border-color: transparent;\n  color: var(--scene-muted);\n  padding: 3px 8px;\n}\n.ghost-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.copy-btn {\n  min-width: 5.5em;\n  text-align: center;\n}\nbutton.is-copied,\nbutton.is-copied:hover:not(:disabled) {\n  color: var(--scene-ok);\n}\nbutton.primary.is-copied,\nbutton.primary.is-copied:hover:not(:disabled) {\n  background: rgba(106, 216, 154, 0.22);\n  border-color: rgba(106, 216, 154, 0.55);\n  color: #d8fbe6;\n}\nsvg {\n  width: 14px;\n  height: 14px;\n  fill: none;\n  stroke: currentColor;\n  stroke-width: 1.7;\n  stroke-linecap: round;\n  stroke-linejoin: round;\n}\n\ninput, textarea, select {\n  color: #eef0f8;\n  background: var(--scene-inset);\n  border: 1px solid var(--scene-line-strong);\n  padding: 5px 9px;\n  min-height: 30px;\n  min-width: 0;\n  width: 100%;\n  caret-color: #9ecfff;\n  transition: border-color .14s ease;\n}\ninput::placeholder, textarea::placeholder { color: var(--scene-faint); }\ntextarea { resize: vertical; }\n\n/* Simulator Export & Multi-Player Import */\n.import-match-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 6px;\n}\n.import-choice-row { display: grid; gap: 4px; }\n.sim-export { gap: 8px; }\n.simulator-source, .simulator-targets {\n  min-width: 0;\n  margin: 0;\n  padding: 0;\n  border: 0;\n}\n.simulator-source legend, .simulator-targets legend {\n  margin-bottom: 5px;\n  padding: 0;\n  font-size: 0.85em;\n  color: var(--scene-faint);\n}\n.sim-source-chips {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 4px;\n  max-height: 108px;\n  overflow-y: auto;\n}\n.sim-chip {\n  min-height: 26px;\n  padding: 2px 9px;\n  font-size: 0.9em;\n  border-radius: 5px;\n  border-color: transparent;\n  background: rgba(255, 255, 255, 0.04);\n  color: var(--scene-muted);\n}\n.sim-chip:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.sim-target-grid {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);\n  gap: 2px;\n  background: var(--scene-inset);\n  border: 1px solid var(--scene-line);\n  border-radius: 6px;\n  padding: 3px;\n}\n.simulator-export-target {\n  display: flex;\n  align-items: baseline;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 2px 8px;\n  width: 100%;\n  min-height: 30px;\n  padding: 4px 8px;\n  border: 0;\n  border-radius: 4px;\n  background: transparent;\n  text-align: left;\n}\n.simulator-export-target:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n}\n.simulator-export-target small {\n  color: var(--scene-faint);\n  font-size: 0.82em;\n  overflow-wrap: anywhere;\n}\n.simulator-export-target[aria-pressed=\"true\"] small { color: #d9e2ff; }\n.sim-result {\n  display: grid;\n  gap: 6px;\n  padding-top: 8px;\n  border-top: 1px solid var(--scene-line-soft);\n}\n.sim-route { font-size: 0.9em; color: #e4e7f7; }\n.sim-warn { font-size: 0.85em; color: var(--scene-warn); }\n\n/* Scene Chips Row */\n.choices {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 5px;\n}\n.choice-chip {\n  min-height: 30px;\n  padding: 4px 10px;\n  border-radius: 6px;\n  background: rgba(255, 255, 255, 0.045);\n  border-color: var(--scene-line);\n  -webkit-touch-callout: none;\n  user-select: none;\n}\n.add-btn {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  gap: 4px;\n  min-height: 30px;\n  padding: 4px 8px;\n  border-radius: 6px;\n  border-color: transparent;\n  background: transparent;\n  color: var(--scene-muted);\n  white-space: nowrap;\n}\n.add-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.add-btn.compact-icon {\n  width: 30px;\n  padding: 0;\n  flex: 0 0 30px;\n}\n.add-btn.compact-icon .add-label { display: none; }\n.import-btn {\n  min-height: 30px;\n  padding: 4px 8px;\n  border-radius: 6px;\n  border-color: transparent;\n  background: transparent;\n  color: var(--scene-muted);\n  white-space: nowrap;\n}\n.import-btn:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.empty { color: var(--scene-faint); font-size: 0.92em; margin-inline-end: 2px; }\n.muted { color: var(--scene-muted); font-size: 0.9em; }\n\n/* Contextual Active Scene Panel */\n.active-scene {\n  margin-top: 8px;\n  padding: 7px 9px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px solid var(--scene-line-soft);\n  border-inline-start: 2px solid var(--scene-ok);\n  border-radius: 6px;\n}\n.active-scene[data-state=\"diff\"] { border-inline-start-color: var(--scene-warn); }\n.active-head {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n.diff-toggle {\n  flex: 1 1 auto;\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 5px;\n  min-height: 26px;\n  padding: 2px 4px;\n  margin: -2px 0 -2px -4px;\n  border: 0;\n  background: transparent;\n  text-align: start;\n}\n.diff-toggle:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); border: 0; }\n.diff-toggle:disabled { opacity: 1; cursor: default; }\n.active-dot { background: var(--scene-ok); }\n.active-scene[data-state=\"diff\"] .active-dot { background: var(--scene-warn); }\n.active-name { font-weight: 600; color: #eef0f8; }\n.active-sep { color: var(--scene-faint); }\n#summary { color: var(--scene-ok); font-weight: 500; }\n#summary.pending { color: var(--scene-warn); }\n.diff-caret {\n  display: inline-flex;\n  color: var(--scene-faint);\n  transition: transform .15s var(--scene-ease);\n}\n.active-scene.diff-open .diff-caret { transform: rotate(180deg); }\n\n.active-actions {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 6px;\n  margin-top: 5px;\n  padding-top: 5px;\n  border-top: 1px solid var(--scene-line-soft);\n}\n.active-actions-left, .active-actions-right {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n.active-actions-right { margin-inline-start: auto; gap: 4px; }\n.update-button,\n.remove-button {\n  width: calc(4em + 24px);\n  flex: 0 0 auto;\n  text-align: center;\n}\n.remove-button.danger,\n.remove-button.danger:hover:not(:disabled) {\n  background: rgba(236, 134, 142, 0.24);\n  border-color: rgba(236, 134, 142, 0.65);\n  color: #ffd9dc;\n  font-weight: 600;\n}\n\n/* Difference List */\n.diff-panel {\n  margin-top: 7px;\n  padding-top: 6px;\n  border-top: 1px solid var(--scene-line-soft);\n}\nol { list-style: none; padding: 0; margin: 0; }\nli {\n  padding: 6px 0;\n  border-bottom: 1px solid var(--scene-line-soft);\n  overflow-wrap: anywhere;\n}\nli:last-child { border-bottom: 0; padding-bottom: 0; }\n.change-title {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin-bottom: 2px;\n}\n.change-title strong { flex: 1; font-weight: 500; color: #eef0f8; }\n.change-title button {\n  min-height: 24px;\n  border: 0;\n  background: transparent;\n  padding: 2px 6px;\n  color: #9ecfff;\n  font-size: 0.9em;\n}\n.change-title button:hover { background: rgba(158, 207, 255, 0.12); border: 0; }\n.unlocated-tag { color: var(--scene-warn); font-size: 0.85em; }\n.values {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);\n  gap: 6px;\n  font-size: 0.92em;\n}\n.values .current { color: var(--scene-muted); }\n.values .arrow { color: var(--scene-faint); }\n.values .goal { color: var(--scene-warn); }\ndetails summary {\n  padding: 4px 0;\n  cursor: pointer;\n  color: var(--scene-muted);\n  font-size: 0.9em;\n}\npre {\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  font-size: 0.84em;\n  padding: 7px 8px;\n  margin: 4px 0 0;\n  background: var(--scene-inset);\n  border-radius: 5px;\n}\n\n/* Inline Editors & Overflow Menu */\n.editor {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);\n  gap: 7px;\n  margin-top: 8px;\n  padding: 8px 9px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px solid var(--scene-line);\n  border-radius: 7px;\n}\n.editor-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 6px;\n}\n.editor-title {\n  font-size: 0.92em;\n  font-weight: 500;\n  color: #eef0f8;\n}\n.inline-form-row {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 5px;\n}\n.inline-form-row input { flex: 1 1 140px; }\n.actions {\n  display: flex;\n  align-items: center;\n  justify-content: flex-end;\n  flex-wrap: wrap;\n  gap: 5px;\n}\n.split-actions { justify-content: space-between; }\n\n.menu {\n  display: grid;\n  gap: 5px;\n  margin-bottom: 8px;\n  padding: 5px;\n  background: #1c2030;\n  border: 1px solid var(--scene-line-strong);\n  border-radius: 7px;\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);\n}\n.menu.menu-inline {\n  margin: 6px 0 0;\n}\n.menu-group {\n  display: grid;\n  gap: 3px;\n  padding-bottom: 5px;\n  border-bottom: 1px solid var(--scene-line);\n}\n.menu-label {\n  font-size: 0.82em;\n  color: var(--scene-faint);\n  padding: 2px 7px 0;\n}\n.menu-grid {\n  display: grid;\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n  gap: 2px;\n}\n.menu button {\n  background: transparent;\n  border-color: transparent;\n  min-height: 30px;\n  padding: 4px 8px;\n  font-size: 0.92em;\n  color: #d9ddf0;\n}\n.menu button:hover:not(:disabled) {\n  background: var(--scene-surface-hover);\n  border-color: transparent;\n  color: #ffffff;\n}\n.menu button.danger-text { color: var(--scene-danger); }\n.menu button.danger-text:hover:not(:disabled) { background: var(--scene-danger-bg); color: var(--scene-danger); }\n.menu button.danger,\n.menu button.danger:hover:not(:disabled) {\n  background: rgba(236, 134, 142, 0.24);\n  border-color: rgba(236, 134, 142, 0.65);\n  color: #ffd9dc;\n  font-weight: 600;\n}\n\n/* Notice / Undo / Error — Non-shifting Floating Toast */\n.notice,\n.cloud-feedback {\n  position: fixed;\n  inset: auto 18px 20px auto;\n  z-index: 99990;\n  max-width: min(360px, calc(100vw - 36px));\n  margin: 0;\n  padding: 7px 11px;\n  background: #191d2c;\n  border: 1px solid var(--scene-line-strong);\n  border-radius: 8px;\n  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);\n  font-size: 0.9em;\n  color: #eef0f8;\n}\n.notice {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 6px;\n}\n#status { flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; }\n#status.error,\n.cloud-feedback.is-error { color: var(--scene-warn); }\n\n/* Cloud Sync Pane */\n.cloud-panel { display: grid; gap: 7px; }\n.cloud-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  flex-wrap: wrap;\n  gap: 6px;\n}\n.cloud-status {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  font-weight: 500;\n  min-width: 0;\n}\n.cloud-status.cloud-warning, .cloud-note, .cloud-compare-title { color: var(--scene-warn); }\n.cloud-note { font-size: 0.9em; }\n.cloud-feedback { color: var(--scene-ok); }\n.cloud-actions { display: flex; flex-wrap: wrap; gap: 4px; }\n.cloud-stats {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 4px 10px;\n  padding: 4px 0;\n  font-size: 0.86em;\n  color: var(--scene-muted);\n}\n.cloud-stat-time {\n  margin-inline-start: auto;\n  color: var(--scene-faint);\n  font-variant-numeric: tabular-nums;\n}\n.cloud-compare {\n  display: grid;\n  gap: 6px;\n  padding: 8px;\n  background: rgba(255, 255, 255, 0.03);\n  border: 1px solid var(--scene-line);\n  border-radius: 6px;\n}\n.cloud-compare-alert { border-inline-start: 2px solid var(--scene-warn); }\n.cloud-compare > summary { font-weight: 500; color: var(--scene-warn); padding: 0; }\n.cloud-facts {\n  display: grid;\n  grid-template-columns: max-content minmax(0, 1fr);\n  gap: 4px 10px;\n  margin: 0;\n  font-size: 0.88em;\n}\n.cloud-facts dt { color: var(--scene-faint); }\n.cloud-facts dd { margin: 0; }\n.cloud-diff { list-style: none; margin: 4px 0 0; padding: 0; font-size: 0.9em; }\n.cloud-diff li { padding: 5px 0; }\n.cloud-diff li div { color: var(--scene-muted); }\n.cloud-confirm {\n  display: grid;\n  gap: 6px;\n  border-inline-start: 2px solid var(--scene-warn);\n  padding-inline-start: 8px;\n  font-size: 0.9em;\n}\n.cloud-tech { border-top: 1px solid var(--scene-line-soft); padding-top: 6px; }\n.cloud-tech-body { display: grid; gap: 3px; font-size: 0.86em; }\n.cloud-link-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }\n.cloud-panel a { color: #9ecfff; overflow-wrap: anywhere; text-decoration: none; }\n.cloud-panel a:hover { text-decoration: underline; }\n.cloud-privacy { color: var(--scene-faint); }\n\n/* Slot Markers */\n:host([data-mwi-scene-marker]) {\n  display: block;\n  width: 100%;\n  max-width: 100%;\n  margin-top: 4px;\n  color: #ffe09c;\n  font: 11px/1.36 -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", sans-serif;\n}\n.target-markers {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);\n  gap: 2px;\n  overflow-wrap: anywhere;\n}\n.target-value {\n  display: block;\n  padding: 1px 3px;\n  border-radius: 3px;\n  background: rgba(255, 190, 79, 0.16);\n  color: #ffe3a8;\n  font-weight: 600;\n}\n.target-condition {\n  color: #ffe09c;\n  border: 0;\n  border-radius: 3px;\n  padding: 2px 3px;\n  min-height: 24px;\n  width: 100%;\n  font: inherit;\n  font-weight: 500;\n  text-align: start;\n  background: rgba(255, 190, 79, 0.12);\n  text-decoration: underline;\n  text-underline-offset: 2px;\n}\n\n[hidden] { display: none !important; }\n::selection { background: #4c63c4; color: #fff; }\n* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.16) transparent; }\n@media (pointer: coarse) {\n  button, .tab, .icon-btn, .compact-btn, .choice-chip, .add-btn, .import-btn { min-height: 40px; }\n  .icon-btn { width: 40px; flex-basis: 40px; }\n}\n@media (max-width: 420px) {\n  .menu-grid { grid-template-columns: minmax(0, 1fr); }\n}\n@media (prefers-reduced-motion: reduce) {\n  * { scroll-behavior: auto !important; transition: none !important; }\n}\n";
   let mounted = null, context = null, rows = [], selectedId = null, busy = false, undo = null, confirmation = null;
   let last = "", loading = 0, failure = "", highlighted = [], highlightedSlots = [], comparingSetup = null, unresolved = [];
-  const markers = new Map();
-  let menuId = null, pickerHighlights = [], activeTab = "scenes", diffOpen = false;
+  const markers = new Map(), pickerGuides = new Map(), scrolledPickers = new WeakMap();
+  let menuId = null, pickerHighlights = [], prefilledHighlights = [], activeTab = "scenes", diffOpen = false;
   let cachedDiffKey = "", cachedDiff = null, pickerFrame = 0;
-  const pickerSelector = '[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"]';
+  const pickerSelector = '[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"], [class*="CombatTriggersSetting_combatTriggersEditMenu__"], ul[role="listbox"]';
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("mwi-layu-loadout-scenes") : null;
 
   function el(tag, text, attrs = {}) {
@@ -4867,6 +5133,10 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     unresolved = [];
     for (const node of pickerHighlights) node.removeAttribute("data-mwi-scene-target");
     pickerHighlights = [];
+    for (const node of prefilledHighlights) node.removeAttribute("data-mwi-scene-prefilled");
+    prefilledHighlights = [];
+    for (const { node } of pickerGuides.values()) node.remove();
+    pickerGuides.clear();
     for (const { host } of markers.values()) host.remove();
     markers.clear();
   }
@@ -4964,18 +5234,28 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     });
     if (success) mounted.add.focus();
   }
-  function requestAction(action, targetRow) {
+  function closeImportForm() {
+    if (!mounted || mounted.importForm.hidden) return;
+    mounted.closeImportSession?.();
+    mounted.importForm.hidden = true;
+  }
+  function requestAction(action, targetRow, source = null) {
     const row = targetRow || (action === "snapshot" ? selected() : activeRows().find(entry => entry.id === menuId) || selected());
     if (!row) return;
-    setTab("scenes");
-    confirmation = { action, row };
+    const mode = action === "remove" ? (source || (!mounted.menu.hidden && menuId === row.id ? "menu" : "direct")) : null;
+    if (activeTab !== "scenes") setTab("scenes");
+    confirmation = { action, row, source: mode };
     mounted.form.hidden = true;
-    mounted.importForm.hidden = true;
+    closeImportForm();
     mounted.simulatorExportForm.hidden = true;
     if (mounted.usageBox) mounted.usageBox.hidden = true;
-    setMenu(false);
+    if (mode !== "menu") setMenu(false);
     render();
-    (action === "snapshot" ? mounted.update : action === "rename" ? mounted.rename : mounted.commit).focus();
+    if (action === "snapshot") mounted.update.focus();
+    else if (action === "rename") mounted.rename.focus();
+    else if (mode === "menu") mounted.remove.focus();
+    else if (mode === "direct") mounted.removeDirect.focus();
+    else mounted.commit.focus();
   }
   async function commitAction() {
     const pending = confirmation;
@@ -4990,6 +5270,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         if (selectedId === row.id) { selectedId = null; diffOpen = false; }
       }
       confirmation = null;
+      setMenu(false);
       await reload();
       if (mounted !== ui) return;
       message(pending.action === "remove" ? `已移除“${row.name}”` : "");
@@ -5027,11 +5308,22 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
   }
   function setMenu(open) {
     if (!mounted) return;
+    let clearedRemove = false;
+    if (open) {
+      const inline = menuId !== null && activeTab === "scenes";
+      mounted.menu.classList.toggle("menu-inline", inline);
+      if (inline) mounted.choices.after(mounted.menu);
+      else mounted.header.after(mounted.menu);
+    } else if (confirmation?.action === "remove" && confirmation.source === "menu") {
+      confirmation = null;
+      clearedRemove = true;
+    }
     mounted.menu.hidden = !open;
     mounted.manage.setAttribute("aria-expanded", String(open && menuId === null));
     for (const node of mounted.choices.querySelectorAll("button")) {
       node.setAttribute("aria-expanded", String(open && (node.dataset.sceneId || null) === menuId));
     }
+    if (clearedRemove) render();
   }
   function bindMenu(node, id) {
     let timer = null, start = null, suppress = false;
@@ -5041,7 +5333,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       menuId = id;
       confirmation = null;
       mounted.form.hidden = true;
-      mounted.importForm.hidden = true;
+      closeImportForm();
       mounted.simulatorExportForm.hidden = true;
       render();
       setMenu(true);
@@ -5076,20 +5368,71 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     }
     return cachedDiff;
   }
+  function renderGuideNode(guide) {
+    const attr = guide.kind === "trigger" ? "data-mwi-trigger-guide" : "data-mwi-picker-guide";
+    const box = el("div", null, { [attr]: "", "data-state": guide.state || "guide", role: "status" });
+    box.append(el("div", guide.title, { class: "mwi-guide-title" }));
+    if (Array.isArray(guide.rows) && guide.rows.length) {
+      const ul = el("ul", null, { class: "mwi-guide-list" });
+      for (const item of guide.rows) {
+        const li = el("li", null, { class: item.done ? "is-done" : "is-todo" });
+        li.append(el("span", item.done ? "✓" : "●", { class: "mwi-guide-mark", "aria-hidden": "true" }));
+        li.append(el("span", item.text, { class: "mwi-guide-text" }));
+        if (item.prefilled) li.append(el("span", "已预填", { class: "mwi-guide-tag" }));
+        ul.append(li);
+      }
+      box.append(ul);
+    }
+    return box;
+  }
   function syncPicker() {
-    let next = [];
+    let next = [], nextPrefilled = [], scrollTargets = [], guides = [];
     const row = selected();
-    if (mounted && context && row && !failure && (pickerHighlights.length || document.querySelector(pickerSelector))) {
-      try { next = Adapter.pickerTargets(context, currentDiff(context, row)); }
-      catch (_) { /* Unknown picker: retain the slot guide. */ }
+    const hasOpen = pickerHighlights.length || prefilledHighlights.length || pickerGuides.size || document.querySelector(pickerSelector);
+    if (mounted && context && row && !failure && hasOpen) {
+      try {
+        const result = Adapter.pickerGuidance
+          ? Adapter.pickerGuidance(context, currentDiff(context, row))
+          : { targets: Adapter.pickerTargets(context, currentDiff(context, row)), prefilled: [], scrollTargets: [], guides: [] };
+        next = result.targets || [];
+        nextPrefilled = result.prefilled || [];
+        scrollTargets = result.scrollTargets || [];
+        guides = result.guides || [];
+      } catch (_) { /* Unknown picker: retain the slot guide. */ }
     }
     for (const node of pickerHighlights) if (!next.includes(node)) node.removeAttribute("data-mwi-scene-target");
     for (const node of next) node.setAttribute("data-mwi-scene-target", "");
     pickerHighlights = next;
+    for (const node of prefilledHighlights) if (!nextPrefilled.includes(node)) node.removeAttribute("data-mwi-scene-prefilled");
+    for (const node of nextPrefilled) node.setAttribute("data-mwi-scene-prefilled", "");
+    prefilledHighlights = nextPrefilled;
+    const activeHosts = new Set(guides.map(guide => guide.host));
+    for (const [host, entry] of pickerGuides) {
+      if (!activeHosts.has(host) || !entry.node.isConnected) {
+        entry.node.remove();
+        pickerGuides.delete(host);
+      }
+    }
+    for (const guide of guides) {
+      const existing = pickerGuides.get(guide.host);
+      if (existing && existing.key === guide.key && existing.node.isConnected) continue;
+      existing?.node.remove();
+      const node = renderGuideNode(guide);
+      if (guide.after && guide.after.parentElement === guide.host) guide.after.after(node);
+      else guide.host.prepend(node);
+      pickerGuides.set(guide.host, { node, key: guide.key });
+    }
+    for (const item of scrollTargets) {
+      if (!item?.container || !item.node || !item.node.isConnected) continue;
+      if (scrolledPickers.get(item.container) === item.key) continue;
+      scrolledPickers.set(item.container, item.key);
+      try { item.node.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+      catch (_) { /* Ignore non-scrollable containers. */ }
+    }
   }
   function schedulePickerSync() {
     if (pickerFrame || !mounted || !context || !selected() || failure) return;
-    if (!pickerHighlights.length && !document.querySelector(pickerSelector)) return;
+    if (!pickerHighlights.length && !prefilledHighlights.length && !pickerGuides.size && !document.querySelector(pickerSelector)) return;
     pickerFrame = requestAnimationFrame(() => {
       pickerFrame = 0;
       syncPicker();
@@ -5101,7 +5444,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     setTab("scenes");
     confirmation = null;
     setMenu(false);
-    mounted.importForm.hidden = true;
+    closeImportForm();
     if (mounted.usageBox) mounted.usageBox.hidden = true;
     mounted.form.hidden = false;
     render();
@@ -5109,6 +5452,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
   }
   function showImportSolo() {
     if (busy || failure) return;
+    const wasHidden = mounted.importForm.hidden;
     mounted.simulatorExportForm.hidden = true;
     setTab("scenes");
     confirmation = null;
@@ -5116,19 +5460,22 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     mounted.form.hidden = true;
     if (mounted.usageBox) mounted.usageBox.hidden = true;
     mounted.importForm.hidden = false;
+    if (wasHidden) mounted.openImportSession?.();
     render();
     mounted.importName.focus();
   }
   function closeEditor() {
     const updating = confirmation?.action === "snapshot";
+    const removingDirect = confirmation?.action === "remove" && confirmation.source === "direct";
     mounted.simulatorExportForm.hidden = true;
     confirmation = null;
     mounted.form.hidden = true;
-    mounted.importForm.hidden = true;
-    mounted.simulatorExportForm.hidden = true;
+    closeImportForm();
     if (mounted.usageBox) mounted.usageBox.hidden = true;
     render();
-    (updating && !mounted.update.hidden ? mounted.update : mounted.add).focus();
+    if (updating && !mounted.update.hidden) mounted.update.focus();
+    else if (removingDirect && !mounted.removeDirect.hidden) mounted.removeDirect.focus();
+    else mounted.add.focus();
   }
   function stopComparison() {
     selectedId = null;
@@ -5166,7 +5513,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       menuId = null;
       confirmation = null;
       form.hidden = true;
-      importForm.hidden = true;
+      closeImportForm();
       simulatorExportForm.hidden = true;
       render();
       setMenu(opening);
@@ -5189,7 +5536,10 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     const menuTargetLabel = el("div", "", { class: "menu-label" });
     const menuContextRow = el("div", null, { class: "menu-grid" });
     const renameButton = button("改名", () => requestAction("rename"));
-    const remove = button("移除", () => requestAction("remove"), { class: "danger-text" });
+    const remove = button("移除", () => {
+      if (confirmation?.action === "remove" && confirmation.source === "menu" && confirmation.row.id === menuId) commitAction();
+      else requestAction("remove", activeRows().find(entry => entry.id === menuId), "menu");
+    }, { class: "danger-text" });
     const stop = button("结束对比", stopComparison);
     menuContextRow.append(renameButton, remove, stop);
     menuContextGroup.append(menuTargetLabel, menuContextRow);
@@ -5209,7 +5559,8 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       const fresh = currentContext();
       if (fresh.raw.actionTypeHrid !== "/action_types/combat") return;
       setTab("scenes"); setMenu(false); confirmation = null;
-      form.hidden = importForm.hidden = true;
+      form.hidden = true;
+      closeImportForm();
       if (usageBox) usageBox.hidden = true;
       simulatorSourceChips.replaceChildren();
       const sources = [{ id: "current", name: `当前 · ${fresh.raw.name}` },
@@ -5302,8 +5653,13 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     const activeActions = el("div", null, { class: "active-actions" });
     const activeLeft = el("div", null, { class: "active-actions-left" });
     const renameDirect = button("改名", () => requestAction("rename", selected()), { class: "compact-btn ghost-btn" });
-    const removeDirect = button("移除", () => requestAction("remove", selected()), { class: "compact-btn ghost-btn danger-hover" });
-    activeLeft.append(renameDirect, removeDirect);
+    const removeDirect = button("移除", () => {
+      const current = selected();
+      if (confirmation?.action === "remove" && confirmation.source === "direct" && confirmation.row.id === current?.id) commitAction();
+      else requestAction("remove", current, "direct");
+    }, { class: "compact-btn ghost-btn danger-hover remove-button" });
+    const cancelRemove = button("取消", closeEditor, { class: "compact-btn ghost-btn", hidden: "" });
+    activeLeft.append(renameDirect, removeDirect, cancelRemove);
 
     const activeRight = el("div", null, { class: "active-actions-right" });
     const cancelUpdate = button("取消", closeEditor, { class: "compact-btn", hidden: "" });
@@ -5334,7 +5690,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     // Single-player and numbered-party import; only the chosen player is saved.
     const importForm = el("form", null, { class: "editor", hidden: "", "aria-label": "导入配装为子方案" });
     const importName = el("input", null, {
-      id: "scene-import-name", maxlength: "60", autocomplete: "off", required: "", placeholder: "输入子方案名称"
+      id: "scene-import-name", maxlength: "60", autocomplete: "off", placeholder: "输入子方案名称（含预设名时自动填入）"
     });
     const importText = el("textarea", null, {
       id: "scene-import-text", rows: "5", maxlength: "5000000", required: "",
@@ -5353,14 +5709,45 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       importChoice.focus();
     }, { class: "compact-btn ghost-btn", hidden: "" });
     importMatchRow.append(importMatch, changeImportMatch);
-    let parsedImportText = null, parsedImportOwner = null;
+    let parsedImportText = null, parsedImportOwner = null, parsedImportChoices = [], autoFilledImportName = "", importFileFallbackName = "";
     function resetImportChoices() {
       parsedImportText = parsedImportOwner = null;
+      parsedImportChoices = [];
       importChoice.replaceChildren();
       importChoice.required = false;
       importChoiceRow.hidden = true;
       importMatchRow.hidden = true;
       changeImportMatch.hidden = true;
+    }
+    function resolveSuggestedImportName() {
+      if (!parsedImportChoices.length) return "";
+      const picked = importChoice.value
+        ? parsedImportChoices.find(choice => choice.key === importChoice.value)
+        : (parsedImportChoices.length === 1 ? parsedImportChoices[0] : null);
+      if (picked) return picked.suggestedName || "";
+      const names = [...new Set(parsedImportChoices.map(choice => choice.suggestedName || ""))];
+      return names.length === 1 ? names[0] : "";
+    }
+    function resolveEffectiveImportName() {
+      return resolveSuggestedImportName() || importFileFallbackName;
+    }
+    function applySuggestedImportName(nextName) {
+      const normalized = typeof nextName === "string" ? nextName.trim().slice(0, 60) : "";
+      if (normalized) {
+        if (!importName.value.trim() || importName.value === autoFilledImportName) {
+          importName.value = normalized;
+          autoFilledImportName = normalized;
+        }
+      } else if (autoFilledImportName && importName.value === autoFilledImportName) {
+        importName.value = "";
+        autoFilledImportName = "";
+      }
+    }
+    function closeImportSession() {
+      if (autoFilledImportName && importName.value === autoFilledImportName) importName.value = "";
+      autoFilledImportName = "";
+      importFileFallbackName = "";
+      resetImportChoices();
     }
     function refreshImportChoices() {
       const fresh = currentContext(), nickname = Adapter.currentCharacterName(fresh);
@@ -5374,6 +5761,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       if (parsedJson?.format === "mwi-virtual-loadout" || parsedJson?.format === "mwi-virtual-loadouts-backup")
         throw Error("这是虚拟配装分享/备份，请在底部「虚拟配装 → 导入分享」中导入。");
       const choices = Core.importChoices(importText.value);
+      parsedImportChoices = choices;
       importChoice.append(el("option", "选择要导入的角色", { value: "" }));
       for (const choice of choices) importChoice.append(el("option", choice.label, { value: choice.key }));
       if (choices.length === 1) importChoice.value = choices[0].key;
@@ -5395,17 +5783,51 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       }
       parsedImportText = importText.value;
       parsedImportOwner = owner;
+      applySuggestedImportName(resolveEffectiveImportName());
     }
-    importText.addEventListener("input", resetImportChoices);
+    function tryRefreshImportChoices() {
+      const trimmed = importText.value.trim();
+      if (!trimmed) {
+        resetImportChoices();
+        applySuggestedImportName("");
+        return;
+      }
+      if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+        resetImportChoices();
+        return;
+      }
+      try {
+        refreshImportChoices();
+        if (mounted?.status.classList.contains("error")) message("");
+      } catch (_) {
+        resetImportChoices();
+      }
+    }
+    function openImportSession() {
+      autoFilledImportName = "";
+      importFileFallbackName = "";
+      tryRefreshImportChoices();
+    }
+    importText.addEventListener("input", () => {
+      importFileFallbackName = "";
+      tryRefreshImportChoices();
+    });
     importText.addEventListener("change", () => {
+      if (!importText.value.trim()) {
+        importFileFallbackName = "";
+        resetImportChoices();
+        applySuggestedImportName("");
+        return;
+      }
       try { refreshImportChoices(); message(""); } catch (error) { message(error.message, true); }
     });
+    importChoice.addEventListener("change", () => applySuggestedImportName(resolveEffectiveImportName()));
     const soloFile = el("input", null, {
       type: "file", accept: ".json,.txt,application/json,text/plain", hidden: "", "aria-label": "选择模拟器配装文件"
     });
     const chooseSoloFile = button("选择文件", () => soloFile.click(), { class: "compact-btn ghost-btn" });
-    const cancelImport = button("取消", () => { importForm.hidden = true; importSoloButton.focus(); }, { class: "compact-btn ghost-btn" });
-    const closeImport = button(null, () => { importForm.hidden = true; importSoloButton.focus(); }, {
+    const cancelImport = button("取消", () => { closeImportForm(); importSoloButton.focus(); }, { class: "compact-btn ghost-btn" });
+    const closeImport = button(null, () => { closeImportForm(); importSoloButton.focus(); }, {
       class: "icon-btn", "aria-label": "关闭导入", title: "关闭"
     });
     closeImport.append(svgIcon("close"));
@@ -5431,18 +5853,33 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         if (input.size > 5000000) throw Error("配装文件超过 5 MB，请选择较小的文件。");
         const text = await input.text();
         if (mounted !== ui) return;
+        importFileFallbackName = input.name.replace(/\.(json|txt)$/i, "").trim().slice(0, 60);
         importText.value = text;
-        refreshImportChoices();
-        if (!importName.value.trim()) importName.value = input.name.replace(/\.(json|txt)$/i, "").slice(0, 60);
+        parsedImportText = null;
+        try {
+          refreshImportChoices();
+        } catch (error) {
+          importFileFallbackName = "";
+          throw error;
+        }
         message("文件已读取，确认名称后保存。");
       } finally { soloFile.value = ""; }
     }));
-    importForm.addEventListener("submit", event => {
+    importForm.addEventListener("submit", async event => {
       event.preventDefault();
-      run(async () => {
-        const fresh = currentContext(), ui = mounted;
-        const title = Core.name(importName.value);
+      let shouldFocusName = false;
+      const ui = mounted;
+      const success = await run(async () => {
+        const fresh = currentContext();
         refreshImportChoices();
+        const fallbackName = resolveEffectiveImportName();
+        const rawTitle = importName.value.trim() ? importName.value : fallbackName;
+        if (!rawTitle) shouldFocusName = true;
+        const title = Core.name(rawTitle);
+        if (!importName.value.trim() && fallbackName) {
+          importName.value = title;
+          autoFilledImportName = title;
+        }
         const raw = Core.importSolo(importText.value, fresh.raw, fresh.props.characterInfo.characterID, importChoice.value);
         const row = await Store.create({ ...fresh, raw }, title);
         notify(fresh);
@@ -5450,12 +5887,14 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         selectedId = row.id;
         diffOpen = false;
         importText.value = "";
-        resetImportChoices();
         importName.value = "";
-        importForm.hidden = true;
+        closeImportForm();
         await reload();
-        if (mounted === ui) { message(""); importSoloButton.focus(); }
+        if (mounted === ui) message("");
       });
+      if (mounted !== ui) return;
+      if (success) importSoloButton.focus();
+      else if (shouldFocusName && !importForm.hidden) importName.focus();
     });
 
     const simulatorExportForm = el("form", null, { class: "editor sim-export", hidden: "", "aria-label": "导出到模拟器" });
@@ -5621,13 +6060,14 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     });
 
     mounted = {
-      cloud, host, shadow, tabScenes, tabCloud, tabCloudDot, paneScenes, paneCloud,
+      cloud, host, shadow, header, tabScenes, tabCloud, tabCloudDot, paneScenes, paneCloud,
       choices, add, menu, menuContextGroup, menuTargetLabel, menuImportSolo,
       form, name, save, cancelNew,
       activeScene, diffToggle, activeDot, activeName, activeSep, summary, diffCaret, stopDirect,
-      activeActions, renameDirect, removeDirect, update, cancelUpdate,
+      activeActions, renameDirect, removeDirect, cancelRemove, update, cancelUpdate,
       renameButton, remove, stop, undoButton, manage,
       importSoloButton, importForm, importName, importText, importChoice, changeImportMatch, chooseSoloFile, cancelImport, saveImport,
+      openImportSession, closeImportSession,
       simulatorExportButton, simulatorExportForm, simulatorSource, simulatorTarget, simulatorCancel, simulatorCopy, simulatorDownload,
       confirm, confirmText, rename, commit, cancel,
       notice, status, retry, differences, list, exportButton, importButton, usageBox
@@ -5726,7 +6166,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
           confirmation = null;
           setMenu(false);
           ui.form.hidden = true;
-          ui.importForm.hidden = true;
+          closeImportForm();
           ui.simulatorExportForm.hidden = true;
           diffOpen = false;
           render();
@@ -5755,18 +6195,31 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     ui.cancelNew.disabled = busy;
 
     const updating = confirmation?.action === "snapshot";
+    const removingDirect = confirmation?.action === "remove" && confirmation.source === "direct" && confirmation.row.id === row?.id;
+    const removingInMenu = confirmation?.action === "remove" && confirmation.source === "menu" && confirmation.row.id === menuId;
     ui.update.textContent = updating ? "更新方案" : "更新";
     ui.update.classList.toggle("primary", updating);
     ui.update.title = updating ? `确认用当前原生配装覆盖“${confirmation.row.name}”` : row ? `用当前原生配装更新“${row.name}”` : "";
     ui.cancelUpdate.hidden = !updating;
     ui.cancelUpdate.disabled = busy;
     ui.update.disabled = busy || !row || Boolean(failure);
+    ui.removeDirect.textContent = removingDirect ? "确认移除" : "移除";
+    ui.removeDirect.classList.toggle("danger", removingDirect);
+    ui.removeDirect.classList.toggle("ghost-btn", !removingDirect);
+    ui.removeDirect.classList.toggle("danger-hover", !removingDirect);
+    ui.removeDirect.title = removingDirect ? `再次点击确认移除“${confirmation.row.name}”` : row ? `移除“${row.name}”` : "";
+    ui.cancelRemove.hidden = !removingDirect;
+    ui.cancelRemove.disabled = busy;
     ui.renameDirect.disabled = ui.removeDirect.disabled = busy || !row || Boolean(failure);
     ui.stopDirect.disabled = busy;
 
     const menuRow = active.find(entry => entry.id === menuId);
     ui.menuContextGroup.hidden = !menuRow;
-    if (menuRow) ui.menuTargetLabel.textContent = `方案：${menuRow.name}`;
+    if (menuRow) ui.menuTargetLabel.textContent = removingInMenu ? `确认移除：${menuRow.name}` : `方案：${menuRow.name}`;
+    ui.remove.textContent = removingInMenu ? "确认移除" : "移除";
+    ui.remove.classList.toggle("danger", removingInMenu);
+    ui.remove.classList.toggle("danger-text", !removingInMenu);
+    ui.remove.title = removingInMenu ? `再次点击确认移除“${menuRow?.name || ""}”` : "";
     for (const node of [ui.renameButton, ui.remove]) node.disabled = busy || !menuRow || Boolean(failure);
     ui.stop.hidden = !row || row.id !== menuId;
     ui.stop.disabled = busy || !row || row.id !== menuId;
@@ -5783,8 +6236,9 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     ui.notice.hidden = !undo && !ui.status.textContent;
     ui.retry.disabled = busy;
 
-    ui.confirm.hidden = !confirmation || updating;
-    if (confirmation && !updating) {
+    const inlineConfirm = updating || removingDirect || removingInMenu;
+    ui.confirm.hidden = !confirmation || inlineConfirm;
+    if (confirmation && !inlineConfirm) {
       const pending = confirmation;
       ui.confirmText.textContent = pending.action === "remove" ? `移除“${pending.row.name}”？` : `改名：${pending.row.name}`;
       ui.rename.hidden = pending.action !== "rename";
@@ -5941,8 +6395,8 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     app.Overview.start();
     const style = el("style", [
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_playerModel__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]):not(.mwi-overview-tools),',
-      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_abilities__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]),',
-      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_consumables__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]) { opacity: 0.42; transition: opacity .15s ease; }',
+      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_abilities__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]):not([class*="LoadoutsPanel_label__"]),',
+      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_consumables__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]):not([class*="LoadoutsPanel_label__"]) { opacity: 0.42; transition: opacity .15s ease; }',
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_playerModel__"] > :hover,',
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_abilities__"] > :hover,',
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_consumables__"] > :hover { opacity: 1; }',
@@ -5950,6 +6404,19 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       '[data-mwi-scene-change] { position: relative; z-index: 2; outline: 2px solid #ffbe4f !important; outline-offset: 0 !important; border-radius: 6px !important; background: rgba(255, 190, 79, 0.16) !important; box-shadow: 0 0 0 1px rgba(255, 190, 79, 0.48), 0 0 12px rgba(255, 190, 79, 0.36), inset 0 0 10px rgba(255, 190, 79, 0.15) !important; }',
       '[data-mwi-scene-change] [class*="Item_itemContainer__"], [data-mwi-scene-change] [class*="Ability_ability__"] { box-shadow: inset 0 0 0 2px rgba(255, 210, 122, 0.88) !important; }',
       '[data-mwi-scene-target] { position: relative; z-index: 2; outline: 3px solid #70b7ff !important; outline-offset: -3px !important; border-radius: 6px !important; background: rgba(112, 183, 255, 0.2) !important; box-shadow: inset 0 0 0 5px #171822, 0 0 0 2px rgba(112, 183, 255, 0.6), 0 0 14px rgba(112, 183, 255, 0.6) !important; }',
+      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target], [class*="CombatTriggersSetting_combatTriggersEditMenu__"] [data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -1px !important; background: rgba(112, 183, 255, 0.22) !important; box-shadow: 0 0 0 1px rgba(112, 183, 255, 0.55), 0 0 10px rgba(112, 183, 255, 0.45) !important; }',
+      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target] { color: #ffffff !important; font-weight: 600 !important; }',
+      '[data-mwi-scene-prefilled] { position: relative; z-index: 2; outline: 2px solid #6ad89a !important; outline-offset: -1px !important; border-radius: 6px !important; background: rgba(106, 216, 154, 0.14) !important; box-shadow: 0 0 10px rgba(106, 216, 154, 0.34) !important; }',
+      '[data-mwi-picker-guide], [data-mwi-trigger-guide] { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #141826; border: 1px solid rgba(112, 183, 255, 0.38); border-left: 3px solid #70b7ff; color: #eef0f8; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; text-align: left; }',
+      '[data-mwi-picker-guide][data-state="warn"], [data-mwi-trigger-guide][data-state="warn"] { border-color: rgba(242, 196, 109, 0.45); border-left-color: #f2c46d; color: #ffe3a8; }',
+      '[data-mwi-trigger-guide][data-state="ready"] { border-color: rgba(106, 216, 154, 0.45); border-left-color: #6ad89a; color: #d8fbe6; }',
+      '[data-mwi-picker-guide] .mwi-guide-title, [data-mwi-trigger-guide] .mwi-guide-title { font-weight: 600; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 3px; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list li { display: flex; align-items: baseline; gap: 5px; font-size: 11.5px; color: #d4daf0; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list li.is-done { color: #9ee6bc; }',
+      '[data-mwi-trigger-guide] .mwi-guide-mark { flex: 0 0 auto; font-weight: 700; color: #70b7ff; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list li.is-done .mwi-guide-mark { color: #6ad89a; }',
+      '[data-mwi-trigger-guide] .mwi-guide-tag { margin-left: auto; padding: 0 5px; border-radius: 4px; background: rgba(106, 216, 154, 0.18); color: #8be6b2; font-size: 10.5px; font-weight: 600; white-space: nowrap; }',
       '@keyframes mwiScenePulse { 0% { box-shadow: 0 0 0 0 rgba(255, 190, 79, 0.88), 0 0 18px rgba(255, 190, 79, 0.72); } 100% { box-shadow: 0 0 0 10px rgba(255, 190, 79, 0), 0 0 12px rgba(255, 190, 79, 0.36); } }',
       '[data-mwi-scene-pulse] { animation: mwiScenePulse .65s ease-out; }',
       '@media (prefers-reduced-motion: reduce) { [data-mwi-scene-pulse] { animation: none !important; } }'
@@ -5957,7 +6424,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     style.id = "mwi-loadout-scenes-highlight-style";
     document.head.append(style);
     const panelSelector = '[class*="LoadoutsPanel_loadoutsPanel__"]';
-    const ownedSelector = '.mwi-overview-cloud, .mwi-overview-cloud-btn, .mwi-overview-scene-count, [data-mwi-overview-status], #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
+    const ownedSelector = '.mwi-overview-cloud, .mwi-overview-cloud-btn, .mwi-overview-scene-count, [data-mwi-overview-status], #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker], [data-mwi-picker-guide], [data-mwi-trigger-guide]';
     const options = { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "aria-hidden", "style", "class"] };
     const observer = new MutationObserver(records => {
       const relevant = records.some(record => {
@@ -5977,6 +6444,9 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     observer.observe(document.documentElement, options);
     setInterval(tick, 650);
     channel?.addEventListener("message", event => { if (event.data?.scope === context?.scope) reload(); });
+    document.addEventListener("input", event => {
+      if (event.target?.closest?.('[class*="CombatTriggersSetting_combatTriggersEditMenu__"]')) schedulePickerSync();
+    }, true);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); reload(); } });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });

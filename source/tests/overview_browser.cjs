@@ -887,6 +887,104 @@ module.exports = async function checkOverviewWorkspace(browser, content, root, p
     await page.waitForFunction(() => !document.querySelector("#mwi-loadout-scenes-host"));
     assert.equal(await page.locator("[data-mwi-scene-change]").count(), 0);
 
+    // Verify auto-filled preset loadout names across solo/group paste, choice switch, manual edit protection, file fallback, and submit fallback.
+    await card12.getByRole("button", { name: "远程迷宫的子方案" }).click();
+    await card12.locator("#mwi-loadout-scenes-host").waitFor();
+    const basePlayer = (name, extra = {}) => ({
+      name,
+      equipment: {
+        two_hand: { itemHrid: "/items/bow", enhancementLevel: 14 },
+        head: { itemHrid: "/items/hood", enhancementLevel: 10 },
+        body: null
+      },
+      abilities: [{ abilityHrid: "/abilities/shot" }, { abilityHrid: "/abilities/heal" }, null, null, null],
+      food: ["/items/yogurt", "", ""],
+      drinks: ["/items/tea", "", ""],
+      triggerMap: { "/abilities/shot": [] },
+      ...extra
+    });
+    const namedSoloPayload = JSON.stringify({
+      format: "mwi-vue-solo", version: 2, loadoutName: "P1 远程·巫师之塔T0",
+      player: basePlayer("测号甲")
+    });
+    const namedGroupPayload = JSON.stringify({
+      format: "mwi-vue-group", version: 2, loadoutName: "3人·巫师之塔T0",
+      players: [basePlayer("测号甲", { loadoutName: "主C·巫师T0" }), basePlayer("测号乙")]
+    });
+    await host.locator(".import-btn").click();
+    // Instant parse on input auto-fills preset loadoutName (not character nickname).
+    await host.locator("#scene-import-text").fill(namedSoloPayload);
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "P1 远程·巫师之塔T0");
+    // Clearing text clears the untouched auto-filled name.
+    await host.locator("#scene-import-text").fill("");
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "");
+    // Multi-player group updates name when switching choice, and respects manual overrides.
+    await host.locator("#scene-import-text").fill(namedGroupPayload);
+    await host.locator("#scene-import-choice").selectOption("1");
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "主C·巫师T0");
+    await host.locator("#scene-import-choice").selectOption("2");
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "3人·巫师之塔T0");
+    await host.locator("#scene-import-name").fill("手改名不被覆盖");
+    await host.locator("#scene-import-choice").selectOption("1");
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "手改名不被覆盖");
+    await host.locator("#scene-import-name").fill("");
+    // File upload prefers JSON loadoutName and falls back to filename only when JSON has no preset name.
+    await host.getByLabel("选择模拟器配装文件").setInputFiles({
+      name: "文件回退测试.json", mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({ format: "mwi-vue-solo", version: 2, loadoutName: "文件内预设名", player: basePlayer("测号甲") }))
+    });
+    await page.waitForFunction(() => document.querySelector("#mwi-loadout-scenes-host")?.shadowRoot.querySelector("#scene-import-name")?.value === "文件内预设名");
+    await host.getByLabel("选择模拟器配装文件").setInputFiles({
+      name: "纯模拟器文件.json", mimeType: "application/json",
+      buffer: Buffer.from(soloPayload)
+    });
+    await page.waitForFunction(() => document.querySelector("#mwi-loadout-scenes-host")?.shadowRoot.querySelector("#scene-import-name")?.value === "纯模拟器文件");
+    // Unnamed multi-player file retains filename fallback when choosing a player, and mixed-name file falls back to filename for unnamed player.
+    await host.getByLabel("选择模拟器配装文件").setInputFiles({
+      name: "外部3人组队文件.json", mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({
+        format: "mwi-vue-group", version: 2,
+        players: [basePlayer("测号甲"), basePlayer("测号乙")]
+      }))
+    });
+    await page.waitForFunction(() => document.querySelector("#mwi-loadout-scenes-host")?.shadowRoot.querySelector("#scene-import-name")?.value === "外部3人组队文件");
+    await host.locator("#scene-import-choice").selectOption("1");
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "外部3人组队文件");
+    await host.getByLabel("选择模拟器配装文件").setInputFiles({
+      name: "混合组队文件.json", mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({
+        format: "mwi-vue-group", version: 2,
+        players: [basePlayer("测号甲", { loadoutName: "单人专属名" }), basePlayer("测号乙")]
+      }))
+    });
+    await page.waitForFunction(() => document.querySelector("#mwi-loadout-scenes-host")?.shadowRoot.querySelector("#scene-import-name")?.value === "混合组队文件");
+    await host.locator("#scene-import-choice").selectOption("1");
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "单人专属名");
+    await host.locator("#scene-import-choice").selectOption("2");
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "混合组队文件");
+    // Submitting unnamed external JSON with empty name shows validation error and focuses #scene-import-name after run() re-enables controls.
+    await host.locator("#scene-import-text").fill(soloPayload);
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "");
+    await host.getByRole("button", { name: "保存为子方案" }).click();
+    await host.locator("#status").filter({ hasText: "请输入 1–60 字的子方案名称" }).waitFor();
+    assert.equal(await host.locator("#scene-import-name").evaluate(node => node.getRootNode().activeElement === node), true);
+    // Submit fallback uses suggestedName when name box is cleared, and duplicate name still fails safely.
+    const fallbackSoloPayload = JSON.stringify({
+      format: "mwi-vue-solo", version: 2, loadoutName: "P1 远程·兜底保存",
+      player: basePlayer("测号甲")
+    });
+    await host.locator("#scene-import-text").fill(fallbackSoloPayload);
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "P1 远程·兜底保存");
+    await host.locator("#scene-import-name").fill("");
+    await host.getByRole("button", { name: "保存为子方案" }).click();
+    await host.locator('.choices [data-scene-id][aria-pressed="true"]').filter({ hasText: "P1 远程·兜底保存" }).waitFor();
+    await host.locator(".import-btn").click();
+    await host.locator("#scene-import-text").fill(fallbackSoloPayload);
+    assert.equal(await host.locator("#scene-import-name").inputValue(), "P1 远程·兜底保存");
+    await host.getByRole("button", { name: "保存为子方案" }).click();
+    await host.locator("#status").filter({ hasText: "已有同名子方案" }).waitFor();
+    await host.locator('form[aria-label="导入配装为子方案"]').getByRole("button", { name: "取消", exact: true }).click();
+
     // Switching to native list restores drag-sortable rows cleanly.
     await page.getByRole("button", { name: "原生列表" }).click();
     assert.equal(await page.locator("[data-mwi-loadout-overview]").count(), 0);

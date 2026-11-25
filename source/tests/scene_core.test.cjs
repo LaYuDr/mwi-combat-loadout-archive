@@ -96,3 +96,101 @@ test("active life slots remain required; malformed types and cross-parent/type c
   assert.throws(() => Core.diff({ ...target, id: 13 }, Core.snapshot(target)), /不匹配/);
   assert.deepEqual(Core.diff(life(null), Core.snapshot(life(""))), []);
 });
+
+test("importChoices extracts suggestedName across supported formats without ever treating player nickname as loadout name", () => {
+  const player = (name, extra = {}) => ({
+    name,
+    levels: { stamina: 100, intelligence: 100, attack: 100, melee: 100, defense: 100, ranged: 100, magic: 100 },
+    equipment: { weapon: { itemHrid: "/items/bow", enhancementLevel: 10 } },
+    abilities: [{ abilityHrid: "/abilities/shot", level: 10 }, null, null, null, null],
+    food: ["/items/yogurt", "", ""],
+    drinks: ["/items/coffee", "", ""],
+    triggerMap: { "/abilities/shot": [] },
+    ...extra
+  });
+
+  // mwi-vue-solo v2: priority loadoutName > name > title > meta.loadoutName; never player.name
+  const soloWithLoadoutName = Core.importChoices(JSON.stringify({
+    format: "mwi-vue-solo", version: 2, loadoutName: "  P1 远程·巫师之塔T0  ", name: "fallback",
+    player: player("角色甲")
+  }));
+  assert.equal(soloWithLoadoutName[0].nickname, "角色甲");
+  assert.equal(soloWithLoadoutName[0].suggestedName, "P1 远程·巫师之塔T0");
+
+  const soloFallbackOrder = Core.importChoices(JSON.stringify({
+    format: "mwi-vue-solo", version: 2, loadoutName: "   ", name: 123, title: "标题回退", meta: { loadoutName: "meta回退" },
+    player: player("角色甲")
+  }));
+  assert.equal(soloFallbackOrder[0].suggestedName, "标题回退");
+
+  const soloMetaFallback = Core.importChoices(JSON.stringify({
+    format: "mwi-vue-solo", version: 2, meta: { loadoutName: "A".repeat(75) },
+    player: player("角色甲")
+  }));
+  assert.equal(soloMetaFallback[0].suggestedName.length, 60);
+  assert.equal(soloMetaFallback[0].suggestedName, "A".repeat(60));
+
+  const soloExternalPlain = Core.importChoices(JSON.stringify({
+    format: "mwi-vue-solo", version: 2, player: player("角色甲")
+  }));
+  assert.equal(soloExternalPlain[0].nickname, "角色甲");
+  assert.equal(soloExternalPlain[0].suggestedName, "");
+
+  // mwi-vue-group v2: player.loadoutName > top-level loadoutName/name/title/meta.loadoutName; never player.name
+  const groupChoices = Core.importChoices(JSON.stringify({
+    format: "mwi-vue-group", version: 2, loadoutName: "3人·巫师之塔T0",
+    players: [player("测号甲", { loadoutName: "主T·巫师之塔T0" }), player("测号乙")]
+  }));
+  assert.deepEqual(groupChoices.map(c => [c.nickname, c.suggestedName]), [
+    ["测号甲", "主T·巫师之塔T0"],
+    ["测号乙", "3人·巫师之塔T0"]
+  ]);
+  assert.equal(Core.matchImportNickname(groupChoices, "测号甲"), "1");
+  assert.equal(Core.matchImportNickname(groupChoices, "测号乙"), "2");
+
+  const groupPlain = Core.importChoices(JSON.stringify({
+    format: "mwi-vue-group", version: 2, players: [player("测号甲"), player("测号乙")]
+  }));
+  assert.deepEqual(groupPlain.map(c => c.suggestedName), ["", ""]);
+
+  // combat-party-builds v1: player.loadoutName > build.loadoutName > build.name > obj.loadoutName
+  const partyBuilds = Core.importChoices(JSON.stringify({
+    schemaVersion: 1, kind: "combat-party-builds", loadoutName: "顶层整队名",
+    builds: [
+      { name: "地牢常规", players: [player("甲", { loadoutName: "甲专属" }), player("乙")] },
+      { players: [player("丙")] }
+    ]
+  }));
+  assert.deepEqual(partyBuilds.map(c => c.suggestedName), ["甲专属", "地牢常规", "顶层整队名"]);
+
+  // MWISIM full simulation export
+  const mwisimFull = Core.importChoices(JSON.stringify({
+    players: [player("甲"), player("乙", { loadoutName: "乙单独名" })],
+    rows: [], targets: [], simulationSettings: {}, meta: { loadoutName: "模拟导出名" }
+  }));
+  assert.deepEqual(mwisimFull.map(c => c.suggestedName), ["模拟导出名", "乙单独名"]);
+
+  // Bare modern single player: never treat data.name (character nickname) as suggestedName
+  const barePlain = Core.importChoices(JSON.stringify(player("仅昵称")));
+  assert.equal(barePlain[0].nickname, "仅昵称");
+  assert.equal(barePlain[0].suggestedName, "");
+  const bareNamed = Core.importChoices(JSON.stringify(player("仅昵称", { loadoutName: "裸对象配装名" })));
+  assert.equal(bareNamed[0].suggestedName, "裸对象配装名");
+
+  // Legacy Shykai solo and numbered dict: read optional loadoutName / meta.loadoutName, never player.name
+  const shykaiBase = extra => ({
+    player: { name: "Shykai角色", equipment: [{ itemLocationHrid: "/item_locations/two_hand", itemHrid: "/items/bow", enhancementLevel: 10 }] },
+    food: { "/action_types/combat": [{ itemHrid: "/items/yogurt" }, null, null] },
+    drinks: { "/action_types/combat": [{ itemHrid: "/items/coffee" }, null, null] },
+    abilities: [{ abilityHrid: "/abilities/shot" }, null, null, null, null],
+    triggerMap: { "/abilities/shot": [] },
+    ...extra
+  });
+  assert.equal(Core.importChoices(JSON.stringify(shykaiBase()))[0].suggestedName, "");
+  assert.equal(Core.importChoices(JSON.stringify(shykaiBase({ loadoutName: "Shykai方案" })))[0].suggestedName, "Shykai方案");
+  const shykaiNumbered = Core.importChoices(JSON.stringify({
+    "1": JSON.stringify(shykaiBase({ meta: { loadoutName: "一号位配装" } })),
+    "2": shykaiBase()
+  }));
+  assert.deepEqual(shykaiNumbered.map(c => c.suggestedName), ["一号位配装", ""]);
+});

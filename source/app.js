@@ -8,10 +8,10 @@
   const css = "__SCENE_CSS__";
   let mounted = null, context = null, rows = [], selectedId = null, busy = false, undo = null, confirmation = null;
   let last = "", loading = 0, failure = "", highlighted = [], highlightedSlots = [], comparingSetup = null, unresolved = [];
-  const markers = new Map();
-  let menuId = null, pickerHighlights = [], activeTab = "scenes", diffOpen = false;
+  const markers = new Map(), pickerGuides = new Map(), scrolledPickers = new WeakMap();
+  let menuId = null, pickerHighlights = [], prefilledHighlights = [], activeTab = "scenes", diffOpen = false;
   let cachedDiffKey = "", cachedDiff = null, pickerFrame = 0;
-  const pickerSelector = '[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"]';
+  const pickerSelector = '[class*="AbilitySlot_availableAbilities__"], [class*="ItemSelector_itemList__"], [class*="CombatTriggersSetting_combatTriggersEditMenu__"], ul[role="listbox"]';
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("mwi-layu-loadout-scenes") : null;
 
   function el(tag, text, attrs = {}) {
@@ -71,6 +71,10 @@
     unresolved = [];
     for (const node of pickerHighlights) node.removeAttribute("data-mwi-scene-target");
     pickerHighlights = [];
+    for (const node of prefilledHighlights) node.removeAttribute("data-mwi-scene-prefilled");
+    prefilledHighlights = [];
+    for (const { node } of pickerGuides.values()) node.remove();
+    pickerGuides.clear();
     for (const { host } of markers.values()) host.remove();
     markers.clear();
   }
@@ -168,18 +172,28 @@
     });
     if (success) mounted.add.focus();
   }
-  function requestAction(action, targetRow) {
+  function closeImportForm() {
+    if (!mounted || mounted.importForm.hidden) return;
+    mounted.closeImportSession?.();
+    mounted.importForm.hidden = true;
+  }
+  function requestAction(action, targetRow, source = null) {
     const row = targetRow || (action === "snapshot" ? selected() : activeRows().find(entry => entry.id === menuId) || selected());
     if (!row) return;
-    setTab("scenes");
-    confirmation = { action, row };
+    const mode = action === "remove" ? (source || (!mounted.menu.hidden && menuId === row.id ? "menu" : "direct")) : null;
+    if (activeTab !== "scenes") setTab("scenes");
+    confirmation = { action, row, source: mode };
     mounted.form.hidden = true;
-    mounted.importForm.hidden = true;
+    closeImportForm();
     mounted.simulatorExportForm.hidden = true;
     if (mounted.usageBox) mounted.usageBox.hidden = true;
-    setMenu(false);
+    if (mode !== "menu") setMenu(false);
     render();
-    (action === "snapshot" ? mounted.update : action === "rename" ? mounted.rename : mounted.commit).focus();
+    if (action === "snapshot") mounted.update.focus();
+    else if (action === "rename") mounted.rename.focus();
+    else if (mode === "menu") mounted.remove.focus();
+    else if (mode === "direct") mounted.removeDirect.focus();
+    else mounted.commit.focus();
   }
   async function commitAction() {
     const pending = confirmation;
@@ -194,6 +208,7 @@
         if (selectedId === row.id) { selectedId = null; diffOpen = false; }
       }
       confirmation = null;
+      setMenu(false);
       await reload();
       if (mounted !== ui) return;
       message(pending.action === "remove" ? `已移除“${row.name}”` : "");
@@ -231,11 +246,22 @@
   }
   function setMenu(open) {
     if (!mounted) return;
+    let clearedRemove = false;
+    if (open) {
+      const inline = menuId !== null && activeTab === "scenes";
+      mounted.menu.classList.toggle("menu-inline", inline);
+      if (inline) mounted.choices.after(mounted.menu);
+      else mounted.header.after(mounted.menu);
+    } else if (confirmation?.action === "remove" && confirmation.source === "menu") {
+      confirmation = null;
+      clearedRemove = true;
+    }
     mounted.menu.hidden = !open;
     mounted.manage.setAttribute("aria-expanded", String(open && menuId === null));
     for (const node of mounted.choices.querySelectorAll("button")) {
       node.setAttribute("aria-expanded", String(open && (node.dataset.sceneId || null) === menuId));
     }
+    if (clearedRemove) render();
   }
   function bindMenu(node, id) {
     let timer = null, start = null, suppress = false;
@@ -245,7 +271,7 @@
       menuId = id;
       confirmation = null;
       mounted.form.hidden = true;
-      mounted.importForm.hidden = true;
+      closeImportForm();
       mounted.simulatorExportForm.hidden = true;
       render();
       setMenu(true);
@@ -280,20 +306,71 @@
     }
     return cachedDiff;
   }
+  function renderGuideNode(guide) {
+    const attr = guide.kind === "trigger" ? "data-mwi-trigger-guide" : "data-mwi-picker-guide";
+    const box = el("div", null, { [attr]: "", "data-state": guide.state || "guide", role: "status" });
+    box.append(el("div", guide.title, { class: "mwi-guide-title" }));
+    if (Array.isArray(guide.rows) && guide.rows.length) {
+      const ul = el("ul", null, { class: "mwi-guide-list" });
+      for (const item of guide.rows) {
+        const li = el("li", null, { class: item.done ? "is-done" : "is-todo" });
+        li.append(el("span", item.done ? "✓" : "●", { class: "mwi-guide-mark", "aria-hidden": "true" }));
+        li.append(el("span", item.text, { class: "mwi-guide-text" }));
+        if (item.prefilled) li.append(el("span", "已预填", { class: "mwi-guide-tag" }));
+        ul.append(li);
+      }
+      box.append(ul);
+    }
+    return box;
+  }
   function syncPicker() {
-    let next = [];
+    let next = [], nextPrefilled = [], scrollTargets = [], guides = [];
     const row = selected();
-    if (mounted && context && row && !failure && (pickerHighlights.length || document.querySelector(pickerSelector))) {
-      try { next = Adapter.pickerTargets(context, currentDiff(context, row)); }
-      catch (_) { /* Unknown picker: retain the slot guide. */ }
+    const hasOpen = pickerHighlights.length || prefilledHighlights.length || pickerGuides.size || document.querySelector(pickerSelector);
+    if (mounted && context && row && !failure && hasOpen) {
+      try {
+        const result = Adapter.pickerGuidance
+          ? Adapter.pickerGuidance(context, currentDiff(context, row))
+          : { targets: Adapter.pickerTargets(context, currentDiff(context, row)), prefilled: [], scrollTargets: [], guides: [] };
+        next = result.targets || [];
+        nextPrefilled = result.prefilled || [];
+        scrollTargets = result.scrollTargets || [];
+        guides = result.guides || [];
+      } catch (_) { /* Unknown picker: retain the slot guide. */ }
     }
     for (const node of pickerHighlights) if (!next.includes(node)) node.removeAttribute("data-mwi-scene-target");
     for (const node of next) node.setAttribute("data-mwi-scene-target", "");
     pickerHighlights = next;
+    for (const node of prefilledHighlights) if (!nextPrefilled.includes(node)) node.removeAttribute("data-mwi-scene-prefilled");
+    for (const node of nextPrefilled) node.setAttribute("data-mwi-scene-prefilled", "");
+    prefilledHighlights = nextPrefilled;
+    const activeHosts = new Set(guides.map(guide => guide.host));
+    for (const [host, entry] of pickerGuides) {
+      if (!activeHosts.has(host) || !entry.node.isConnected) {
+        entry.node.remove();
+        pickerGuides.delete(host);
+      }
+    }
+    for (const guide of guides) {
+      const existing = pickerGuides.get(guide.host);
+      if (existing && existing.key === guide.key && existing.node.isConnected) continue;
+      existing?.node.remove();
+      const node = renderGuideNode(guide);
+      if (guide.after && guide.after.parentElement === guide.host) guide.after.after(node);
+      else guide.host.prepend(node);
+      pickerGuides.set(guide.host, { node, key: guide.key });
+    }
+    for (const item of scrollTargets) {
+      if (!item?.container || !item.node || !item.node.isConnected) continue;
+      if (scrolledPickers.get(item.container) === item.key) continue;
+      scrolledPickers.set(item.container, item.key);
+      try { item.node.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+      catch (_) { /* Ignore non-scrollable containers. */ }
+    }
   }
   function schedulePickerSync() {
     if (pickerFrame || !mounted || !context || !selected() || failure) return;
-    if (!pickerHighlights.length && !document.querySelector(pickerSelector)) return;
+    if (!pickerHighlights.length && !prefilledHighlights.length && !pickerGuides.size && !document.querySelector(pickerSelector)) return;
     pickerFrame = requestAnimationFrame(() => {
       pickerFrame = 0;
       syncPicker();
@@ -305,7 +382,7 @@
     setTab("scenes");
     confirmation = null;
     setMenu(false);
-    mounted.importForm.hidden = true;
+    closeImportForm();
     if (mounted.usageBox) mounted.usageBox.hidden = true;
     mounted.form.hidden = false;
     render();
@@ -313,6 +390,7 @@
   }
   function showImportSolo() {
     if (busy || failure) return;
+    const wasHidden = mounted.importForm.hidden;
     mounted.simulatorExportForm.hidden = true;
     setTab("scenes");
     confirmation = null;
@@ -320,19 +398,22 @@
     mounted.form.hidden = true;
     if (mounted.usageBox) mounted.usageBox.hidden = true;
     mounted.importForm.hidden = false;
+    if (wasHidden) mounted.openImportSession?.();
     render();
     mounted.importName.focus();
   }
   function closeEditor() {
     const updating = confirmation?.action === "snapshot";
+    const removingDirect = confirmation?.action === "remove" && confirmation.source === "direct";
     mounted.simulatorExportForm.hidden = true;
     confirmation = null;
     mounted.form.hidden = true;
-    mounted.importForm.hidden = true;
-    mounted.simulatorExportForm.hidden = true;
+    closeImportForm();
     if (mounted.usageBox) mounted.usageBox.hidden = true;
     render();
-    (updating && !mounted.update.hidden ? mounted.update : mounted.add).focus();
+    if (updating && !mounted.update.hidden) mounted.update.focus();
+    else if (removingDirect && !mounted.removeDirect.hidden) mounted.removeDirect.focus();
+    else mounted.add.focus();
   }
   function stopComparison() {
     selectedId = null;
@@ -370,7 +451,7 @@
       menuId = null;
       confirmation = null;
       form.hidden = true;
-      importForm.hidden = true;
+      closeImportForm();
       simulatorExportForm.hidden = true;
       render();
       setMenu(opening);
@@ -393,7 +474,10 @@
     const menuTargetLabel = el("div", "", { class: "menu-label" });
     const menuContextRow = el("div", null, { class: "menu-grid" });
     const renameButton = button("改名", () => requestAction("rename"));
-    const remove = button("移除", () => requestAction("remove"), { class: "danger-text" });
+    const remove = button("移除", () => {
+      if (confirmation?.action === "remove" && confirmation.source === "menu" && confirmation.row.id === menuId) commitAction();
+      else requestAction("remove", activeRows().find(entry => entry.id === menuId), "menu");
+    }, { class: "danger-text" });
     const stop = button("结束对比", stopComparison);
     menuContextRow.append(renameButton, remove, stop);
     menuContextGroup.append(menuTargetLabel, menuContextRow);
@@ -413,7 +497,8 @@
       const fresh = currentContext();
       if (fresh.raw.actionTypeHrid !== "/action_types/combat") return;
       setTab("scenes"); setMenu(false); confirmation = null;
-      form.hidden = importForm.hidden = true;
+      form.hidden = true;
+      closeImportForm();
       if (usageBox) usageBox.hidden = true;
       simulatorSourceChips.replaceChildren();
       const sources = [{ id: "current", name: `当前 · ${fresh.raw.name}` },
@@ -506,8 +591,13 @@
     const activeActions = el("div", null, { class: "active-actions" });
     const activeLeft = el("div", null, { class: "active-actions-left" });
     const renameDirect = button("改名", () => requestAction("rename", selected()), { class: "compact-btn ghost-btn" });
-    const removeDirect = button("移除", () => requestAction("remove", selected()), { class: "compact-btn ghost-btn danger-hover" });
-    activeLeft.append(renameDirect, removeDirect);
+    const removeDirect = button("移除", () => {
+      const current = selected();
+      if (confirmation?.action === "remove" && confirmation.source === "direct" && confirmation.row.id === current?.id) commitAction();
+      else requestAction("remove", current, "direct");
+    }, { class: "compact-btn ghost-btn danger-hover remove-button" });
+    const cancelRemove = button("取消", closeEditor, { class: "compact-btn ghost-btn", hidden: "" });
+    activeLeft.append(renameDirect, removeDirect, cancelRemove);
 
     const activeRight = el("div", null, { class: "active-actions-right" });
     const cancelUpdate = button("取消", closeEditor, { class: "compact-btn", hidden: "" });
@@ -538,7 +628,7 @@
     // Single-player and numbered-party import; only the chosen player is saved.
     const importForm = el("form", null, { class: "editor", hidden: "", "aria-label": "导入配装为子方案" });
     const importName = el("input", null, {
-      id: "scene-import-name", maxlength: "60", autocomplete: "off", required: "", placeholder: "输入子方案名称"
+      id: "scene-import-name", maxlength: "60", autocomplete: "off", placeholder: "输入子方案名称（含预设名时自动填入）"
     });
     const importText = el("textarea", null, {
       id: "scene-import-text", rows: "5", maxlength: "5000000", required: "",
@@ -557,14 +647,45 @@
       importChoice.focus();
     }, { class: "compact-btn ghost-btn", hidden: "" });
     importMatchRow.append(importMatch, changeImportMatch);
-    let parsedImportText = null, parsedImportOwner = null;
+    let parsedImportText = null, parsedImportOwner = null, parsedImportChoices = [], autoFilledImportName = "", importFileFallbackName = "";
     function resetImportChoices() {
       parsedImportText = parsedImportOwner = null;
+      parsedImportChoices = [];
       importChoice.replaceChildren();
       importChoice.required = false;
       importChoiceRow.hidden = true;
       importMatchRow.hidden = true;
       changeImportMatch.hidden = true;
+    }
+    function resolveSuggestedImportName() {
+      if (!parsedImportChoices.length) return "";
+      const picked = importChoice.value
+        ? parsedImportChoices.find(choice => choice.key === importChoice.value)
+        : (parsedImportChoices.length === 1 ? parsedImportChoices[0] : null);
+      if (picked) return picked.suggestedName || "";
+      const names = [...new Set(parsedImportChoices.map(choice => choice.suggestedName || ""))];
+      return names.length === 1 ? names[0] : "";
+    }
+    function resolveEffectiveImportName() {
+      return resolveSuggestedImportName() || importFileFallbackName;
+    }
+    function applySuggestedImportName(nextName) {
+      const normalized = typeof nextName === "string" ? nextName.trim().slice(0, 60) : "";
+      if (normalized) {
+        if (!importName.value.trim() || importName.value === autoFilledImportName) {
+          importName.value = normalized;
+          autoFilledImportName = normalized;
+        }
+      } else if (autoFilledImportName && importName.value === autoFilledImportName) {
+        importName.value = "";
+        autoFilledImportName = "";
+      }
+    }
+    function closeImportSession() {
+      if (autoFilledImportName && importName.value === autoFilledImportName) importName.value = "";
+      autoFilledImportName = "";
+      importFileFallbackName = "";
+      resetImportChoices();
     }
     function refreshImportChoices() {
       const fresh = currentContext(), nickname = Adapter.currentCharacterName(fresh);
@@ -578,6 +699,7 @@
       if (parsedJson?.format === "mwi-virtual-loadout" || parsedJson?.format === "mwi-virtual-loadouts-backup")
         throw Error("这是虚拟配装分享/备份，请在底部「虚拟配装 → 导入分享」中导入。");
       const choices = Core.importChoices(importText.value);
+      parsedImportChoices = choices;
       importChoice.append(el("option", "选择要导入的角色", { value: "" }));
       for (const choice of choices) importChoice.append(el("option", choice.label, { value: choice.key }));
       if (choices.length === 1) importChoice.value = choices[0].key;
@@ -599,17 +721,51 @@
       }
       parsedImportText = importText.value;
       parsedImportOwner = owner;
+      applySuggestedImportName(resolveEffectiveImportName());
     }
-    importText.addEventListener("input", resetImportChoices);
+    function tryRefreshImportChoices() {
+      const trimmed = importText.value.trim();
+      if (!trimmed) {
+        resetImportChoices();
+        applySuggestedImportName("");
+        return;
+      }
+      if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+        resetImportChoices();
+        return;
+      }
+      try {
+        refreshImportChoices();
+        if (mounted?.status.classList.contains("error")) message("");
+      } catch (_) {
+        resetImportChoices();
+      }
+    }
+    function openImportSession() {
+      autoFilledImportName = "";
+      importFileFallbackName = "";
+      tryRefreshImportChoices();
+    }
+    importText.addEventListener("input", () => {
+      importFileFallbackName = "";
+      tryRefreshImportChoices();
+    });
     importText.addEventListener("change", () => {
+      if (!importText.value.trim()) {
+        importFileFallbackName = "";
+        resetImportChoices();
+        applySuggestedImportName("");
+        return;
+      }
       try { refreshImportChoices(); message(""); } catch (error) { message(error.message, true); }
     });
+    importChoice.addEventListener("change", () => applySuggestedImportName(resolveEffectiveImportName()));
     const soloFile = el("input", null, {
       type: "file", accept: ".json,.txt,application/json,text/plain", hidden: "", "aria-label": "选择模拟器配装文件"
     });
     const chooseSoloFile = button("选择文件", () => soloFile.click(), { class: "compact-btn ghost-btn" });
-    const cancelImport = button("取消", () => { importForm.hidden = true; importSoloButton.focus(); }, { class: "compact-btn ghost-btn" });
-    const closeImport = button(null, () => { importForm.hidden = true; importSoloButton.focus(); }, {
+    const cancelImport = button("取消", () => { closeImportForm(); importSoloButton.focus(); }, { class: "compact-btn ghost-btn" });
+    const closeImport = button(null, () => { closeImportForm(); importSoloButton.focus(); }, {
       class: "icon-btn", "aria-label": "关闭导入", title: "关闭"
     });
     closeImport.append(svgIcon("close"));
@@ -635,18 +791,33 @@
         if (input.size > 5000000) throw Error("配装文件超过 5 MB，请选择较小的文件。");
         const text = await input.text();
         if (mounted !== ui) return;
+        importFileFallbackName = input.name.replace(/\.(json|txt)$/i, "").trim().slice(0, 60);
         importText.value = text;
-        refreshImportChoices();
-        if (!importName.value.trim()) importName.value = input.name.replace(/\.(json|txt)$/i, "").slice(0, 60);
+        parsedImportText = null;
+        try {
+          refreshImportChoices();
+        } catch (error) {
+          importFileFallbackName = "";
+          throw error;
+        }
         message("文件已读取，确认名称后保存。");
       } finally { soloFile.value = ""; }
     }));
-    importForm.addEventListener("submit", event => {
+    importForm.addEventListener("submit", async event => {
       event.preventDefault();
-      run(async () => {
-        const fresh = currentContext(), ui = mounted;
-        const title = Core.name(importName.value);
+      let shouldFocusName = false;
+      const ui = mounted;
+      const success = await run(async () => {
+        const fresh = currentContext();
         refreshImportChoices();
+        const fallbackName = resolveEffectiveImportName();
+        const rawTitle = importName.value.trim() ? importName.value : fallbackName;
+        if (!rawTitle) shouldFocusName = true;
+        const title = Core.name(rawTitle);
+        if (!importName.value.trim() && fallbackName) {
+          importName.value = title;
+          autoFilledImportName = title;
+        }
         const raw = Core.importSolo(importText.value, fresh.raw, fresh.props.characterInfo.characterID, importChoice.value);
         const row = await Store.create({ ...fresh, raw }, title);
         notify(fresh);
@@ -654,12 +825,14 @@
         selectedId = row.id;
         diffOpen = false;
         importText.value = "";
-        resetImportChoices();
         importName.value = "";
-        importForm.hidden = true;
+        closeImportForm();
         await reload();
-        if (mounted === ui) { message(""); importSoloButton.focus(); }
+        if (mounted === ui) message("");
       });
+      if (mounted !== ui) return;
+      if (success) importSoloButton.focus();
+      else if (shouldFocusName && !importForm.hidden) importName.focus();
     });
 
     const simulatorExportForm = el("form", null, { class: "editor sim-export", hidden: "", "aria-label": "导出到模拟器" });
@@ -825,13 +998,14 @@
     });
 
     mounted = {
-      cloud, host, shadow, tabScenes, tabCloud, tabCloudDot, paneScenes, paneCloud,
+      cloud, host, shadow, header, tabScenes, tabCloud, tabCloudDot, paneScenes, paneCloud,
       choices, add, menu, menuContextGroup, menuTargetLabel, menuImportSolo,
       form, name, save, cancelNew,
       activeScene, diffToggle, activeDot, activeName, activeSep, summary, diffCaret, stopDirect,
-      activeActions, renameDirect, removeDirect, update, cancelUpdate,
+      activeActions, renameDirect, removeDirect, cancelRemove, update, cancelUpdate,
       renameButton, remove, stop, undoButton, manage,
       importSoloButton, importForm, importName, importText, importChoice, changeImportMatch, chooseSoloFile, cancelImport, saveImport,
+      openImportSession, closeImportSession,
       simulatorExportButton, simulatorExportForm, simulatorSource, simulatorTarget, simulatorCancel, simulatorCopy, simulatorDownload,
       confirm, confirmText, rename, commit, cancel,
       notice, status, retry, differences, list, exportButton, importButton, usageBox
@@ -930,7 +1104,7 @@
           confirmation = null;
           setMenu(false);
           ui.form.hidden = true;
-          ui.importForm.hidden = true;
+          closeImportForm();
           ui.simulatorExportForm.hidden = true;
           diffOpen = false;
           render();
@@ -959,18 +1133,31 @@
     ui.cancelNew.disabled = busy;
 
     const updating = confirmation?.action === "snapshot";
+    const removingDirect = confirmation?.action === "remove" && confirmation.source === "direct" && confirmation.row.id === row?.id;
+    const removingInMenu = confirmation?.action === "remove" && confirmation.source === "menu" && confirmation.row.id === menuId;
     ui.update.textContent = updating ? "更新方案" : "更新";
     ui.update.classList.toggle("primary", updating);
     ui.update.title = updating ? `确认用当前原生配装覆盖“${confirmation.row.name}”` : row ? `用当前原生配装更新“${row.name}”` : "";
     ui.cancelUpdate.hidden = !updating;
     ui.cancelUpdate.disabled = busy;
     ui.update.disabled = busy || !row || Boolean(failure);
+    ui.removeDirect.textContent = removingDirect ? "确认移除" : "移除";
+    ui.removeDirect.classList.toggle("danger", removingDirect);
+    ui.removeDirect.classList.toggle("ghost-btn", !removingDirect);
+    ui.removeDirect.classList.toggle("danger-hover", !removingDirect);
+    ui.removeDirect.title = removingDirect ? `再次点击确认移除“${confirmation.row.name}”` : row ? `移除“${row.name}”` : "";
+    ui.cancelRemove.hidden = !removingDirect;
+    ui.cancelRemove.disabled = busy;
     ui.renameDirect.disabled = ui.removeDirect.disabled = busy || !row || Boolean(failure);
     ui.stopDirect.disabled = busy;
 
     const menuRow = active.find(entry => entry.id === menuId);
     ui.menuContextGroup.hidden = !menuRow;
-    if (menuRow) ui.menuTargetLabel.textContent = `方案：${menuRow.name}`;
+    if (menuRow) ui.menuTargetLabel.textContent = removingInMenu ? `确认移除：${menuRow.name}` : `方案：${menuRow.name}`;
+    ui.remove.textContent = removingInMenu ? "确认移除" : "移除";
+    ui.remove.classList.toggle("danger", removingInMenu);
+    ui.remove.classList.toggle("danger-text", !removingInMenu);
+    ui.remove.title = removingInMenu ? `再次点击确认移除“${menuRow?.name || ""}”` : "";
     for (const node of [ui.renameButton, ui.remove]) node.disabled = busy || !menuRow || Boolean(failure);
     ui.stop.hidden = !row || row.id !== menuId;
     ui.stop.disabled = busy || !row || row.id !== menuId;
@@ -987,8 +1174,9 @@
     ui.notice.hidden = !undo && !ui.status.textContent;
     ui.retry.disabled = busy;
 
-    ui.confirm.hidden = !confirmation || updating;
-    if (confirmation && !updating) {
+    const inlineConfirm = updating || removingDirect || removingInMenu;
+    ui.confirm.hidden = !confirmation || inlineConfirm;
+    if (confirmation && !inlineConfirm) {
       const pending = confirmation;
       ui.confirmText.textContent = pending.action === "remove" ? `移除“${pending.row.name}”？` : `改名：${pending.row.name}`;
       ui.rename.hidden = pending.action !== "rename";
@@ -1145,8 +1333,8 @@
     app.Overview.start();
     const style = el("style", [
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_playerModel__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]):not(.mwi-overview-tools),',
-      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_abilities__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]),',
-      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_consumables__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]) { opacity: 0.42; transition: opacity .15s ease; }',
+      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_abilities__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]):not([class*="LoadoutsPanel_label__"]),',
+      '[data-mwi-scene-comparing] [class*="LoadoutsPanel_consumables__"] > :not([data-mwi-scene-change]):not([data-mwi-scene-slot-change]):not([class*="LoadoutsPanel_label__"]) { opacity: 0.42; transition: opacity .15s ease; }',
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_playerModel__"] > :hover,',
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_abilities__"] > :hover,',
       '[data-mwi-scene-comparing] [class*="LoadoutsPanel_consumables__"] > :hover { opacity: 1; }',
@@ -1154,6 +1342,19 @@
       '[data-mwi-scene-change] { position: relative; z-index: 2; outline: 2px solid #ffbe4f !important; outline-offset: 0 !important; border-radius: 6px !important; background: rgba(255, 190, 79, 0.16) !important; box-shadow: 0 0 0 1px rgba(255, 190, 79, 0.48), 0 0 12px rgba(255, 190, 79, 0.36), inset 0 0 10px rgba(255, 190, 79, 0.15) !important; }',
       '[data-mwi-scene-change] [class*="Item_itemContainer__"], [data-mwi-scene-change] [class*="Ability_ability__"] { box-shadow: inset 0 0 0 2px rgba(255, 210, 122, 0.88) !important; }',
       '[data-mwi-scene-target] { position: relative; z-index: 2; outline: 3px solid #70b7ff !important; outline-offset: -3px !important; border-radius: 6px !important; background: rgba(112, 183, 255, 0.2) !important; box-shadow: inset 0 0 0 5px #171822, 0 0 0 2px rgba(112, 183, 255, 0.6), 0 0 14px rgba(112, 183, 255, 0.6) !important; }',
+      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target], [class*="CombatTriggersSetting_combatTriggersEditMenu__"] [data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -1px !important; background: rgba(112, 183, 255, 0.22) !important; box-shadow: 0 0 0 1px rgba(112, 183, 255, 0.55), 0 0 10px rgba(112, 183, 255, 0.45) !important; }',
+      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target] { color: #ffffff !important; font-weight: 600 !important; }',
+      '[data-mwi-scene-prefilled] { position: relative; z-index: 2; outline: 2px solid #6ad89a !important; outline-offset: -1px !important; border-radius: 6px !important; background: rgba(106, 216, 154, 0.14) !important; box-shadow: 0 0 10px rgba(106, 216, 154, 0.34) !important; }',
+      '[data-mwi-picker-guide], [data-mwi-trigger-guide] { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #141826; border: 1px solid rgba(112, 183, 255, 0.38); border-left: 3px solid #70b7ff; color: #eef0f8; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; text-align: left; }',
+      '[data-mwi-picker-guide][data-state="warn"], [data-mwi-trigger-guide][data-state="warn"] { border-color: rgba(242, 196, 109, 0.45); border-left-color: #f2c46d; color: #ffe3a8; }',
+      '[data-mwi-trigger-guide][data-state="ready"] { border-color: rgba(106, 216, 154, 0.45); border-left-color: #6ad89a; color: #d8fbe6; }',
+      '[data-mwi-picker-guide] .mwi-guide-title, [data-mwi-trigger-guide] .mwi-guide-title { font-weight: 600; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 3px; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list li { display: flex; align-items: baseline; gap: 5px; font-size: 11.5px; color: #d4daf0; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list li.is-done { color: #9ee6bc; }',
+      '[data-mwi-trigger-guide] .mwi-guide-mark { flex: 0 0 auto; font-weight: 700; color: #70b7ff; }',
+      '[data-mwi-trigger-guide] .mwi-guide-list li.is-done .mwi-guide-mark { color: #6ad89a; }',
+      '[data-mwi-trigger-guide] .mwi-guide-tag { margin-left: auto; padding: 0 5px; border-radius: 4px; background: rgba(106, 216, 154, 0.18); color: #8be6b2; font-size: 10.5px; font-weight: 600; white-space: nowrap; }',
       '@keyframes mwiScenePulse { 0% { box-shadow: 0 0 0 0 rgba(255, 190, 79, 0.88), 0 0 18px rgba(255, 190, 79, 0.72); } 100% { box-shadow: 0 0 0 10px rgba(255, 190, 79, 0), 0 0 12px rgba(255, 190, 79, 0.36); } }',
       '[data-mwi-scene-pulse] { animation: mwiScenePulse .65s ease-out; }',
       '@media (prefers-reduced-motion: reduce) { [data-mwi-scene-pulse] { animation: none !important; } }'
@@ -1161,7 +1362,7 @@
     style.id = "mwi-loadout-scenes-highlight-style";
     document.head.append(style);
     const panelSelector = '[class*="LoadoutsPanel_loadoutsPanel__"]';
-    const ownedSelector = '.mwi-overview-cloud, .mwi-overview-cloud-btn, .mwi-overview-scene-count, [data-mwi-overview-status], #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker]';
+    const ownedSelector = '.mwi-overview-cloud, .mwi-overview-cloud-btn, .mwi-overview-scene-count, [data-mwi-overview-status], #mwi-loadout-scenes-host, #mwi-loadout-scenes-unavailable, [data-mwi-scene-marker], [data-mwi-picker-guide], [data-mwi-trigger-guide]';
     const options = { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "aria-hidden", "style", "class"] };
     const observer = new MutationObserver(records => {
       const relevant = records.some(record => {
@@ -1181,6 +1382,9 @@
     observer.observe(document.documentElement, options);
     setInterval(tick, 650);
     channel?.addEventListener("message", event => { if (event.data?.scope === context?.scope) reload(); });
+    document.addEventListener("input", event => {
+      if (event.target?.closest?.('[class*="CombatTriggersSetting_combatTriggersEditMenu__"]')) schedulePickerSync();
+    }, true);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); reload(); } });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });

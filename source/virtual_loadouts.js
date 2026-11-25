@@ -188,7 +188,8 @@
           attempted: 0, error: ""
         };
       }
-      const title = app.Core.name(item.name);
+      const rawTitle = [item.name, item.loadoutName, item.snapshot?.raw?.name].find(v => typeof v === "string" && v.trim());
+      const title = app.Core.name(rawTitle);
       const snapshot = portableSnapshot(item.snapshot, title);
       return {
         key: scope + "|" + crypto.randomUUID(), token: crypto.randomUUID(), owner: scope, board: null,

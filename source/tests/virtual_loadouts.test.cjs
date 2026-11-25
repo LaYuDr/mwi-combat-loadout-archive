@@ -113,3 +113,45 @@ test("virtual removal can be restored and backup export/import deduplicates loca
   assert.ok(restored.some(r => !r.board && r.scenes[0].name === "本地副本"));
   await assert.rejects(V.importBackup(71, JSON.stringify({ format: "unknown" })), /格式无法识别/);
 });
+
+test("virtual share and backup import fall back to loadoutName and snapshot.raw.name while preserving 1-60 char validation", async () => {
+  const h = harness(), V = h.app.Virtual;
+  const editorCtx = { MWILoadoutScenes: { Core } };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../virtual_editor.js"), "utf8"), editorCtx);
+  const Draft = editorCtx.MWILoadoutScenes.VirtualDraft;
+
+  const fromLoadoutName = Draft.parse(JSON.stringify({
+    format: "mwi-virtual-loadout", version: 1, loadoutName: "P1 魔法·牛", snapshot
+  }));
+  assert.equal(fromLoadoutName.name, "P1 魔法·牛");
+  assert.equal(fromLoadoutName.snapshot.raw.name, "P1 魔法·牛");
+
+  const fromSnapshotName = Draft.parse(JSON.stringify({
+    format: "mwi-virtual-loadout", version: 1, name: "   ", snapshot
+  }));
+  assert.equal(fromSnapshotName.name, "分享配装");
+  assert.equal(fromSnapshotName.snapshot.raw.name, "分享配装");
+
+  assert.throws(() => Draft.parse(JSON.stringify({
+    format: "mwi-virtual-loadout", version: 1, name: "超".repeat(61), snapshot
+  })), /1–60/);
+  assert.throws(() => Draft.parse(JSON.stringify({
+    format: "mwi-virtual-loadout", version: 1, snapshot: Core.snapshot({ ...snapshot.raw, name: "" })
+  })), /1–60/);
+
+  const backupFallback = JSON.stringify({
+    format: "mwi-virtual-loadouts-backup", version: 1,
+    entries: [
+      { board: null, loadoutName: "批量回退一", snapshot },
+      { board: null, name: "", snapshot: Core.snapshot({ ...snapshot.raw, name: "批量回退二" }) }
+    ]
+  });
+  assert.deepEqual({ ...await V.importBackup(71, backupFallback) }, { added: 2, skipped: 0 });
+  const rows = await V.list(71);
+  assert.deepEqual(rows.map(row => row.scenes[0].name).sort(), ["批量回退一", "批量回退二"]);
+
+  await assert.rejects(V.importBackup(71, JSON.stringify({
+    format: "mwi-virtual-loadouts-backup", version: 1,
+    entries: [{ board: null, loadoutName: "长".repeat(61), snapshot }]
+  })), /1–60/);
+});

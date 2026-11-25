@@ -89,31 +89,45 @@
     if (!object(value) || value.schemaVersion !== 1) throw Error("子方案版本无法识别，请使用兼容版本。");
     return snapshot(value.raw);
   }
+  function pickSuggestedName(...candidates) {
+    for (const value of candidates) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (trimmed) return trimmed.slice(0, 60);
+    }
+    return "";
+  }
   function parseImport(text) {
     if (typeof text !== "string" || text.length > 5000000) throw Error("配装内容超过 5 MB，未导入。");
     let data;
     try { data = JSON.parse(text); } catch (_) { throw Error("配装内容不是有效 JSON，请重新粘贴或选择文件。"); }
-    const modern = (players, prefix = "", title = "") => {
+    const modern = (players, prefix = "", title = "", fallbackNames = []) => {
       if (!Array.isArray(players) || !players.length || players.length > 5 || players.some(player => !object(player)))
         throw Error("角色列表需要包含 1–5 个有效角色。");
       return players.map((player, index) => ({ key: `${prefix}${index + 1}`,
-        label: `${title}${String(player.name || `角色 ${index + 1}`).slice(0, 60)} · ${index + 1}`, player }));
+        label: `${title}${String(player.name || `角色 ${index + 1}`).slice(0, 60)} · ${index + 1}`, player,
+        suggestedName: pickSuggestedName(player.loadoutName, ...fallbackNames) }));
     };
     if (data?.format === "mwi-vue-solo" && data.version === 2 && object(data.player))
-      return [{ key: "solo", label: "当前角色", player: data.player }];
-    if (data?.version === 2 && data.format === "mwi-vue-group") return modern(data.players);
+      return [{ key: "solo", label: "当前角色", player: data.player,
+        suggestedName: pickSuggestedName(data.loadoutName, data.name, data.title, data.meta?.loadoutName) }];
+    if (data?.version === 2 && data.format === "mwi-vue-group")
+      return modern(data.players, "", "", [data.loadoutName, data.name, data.title, data.meta?.loadoutName]);
     if (data?.schemaVersion === 1 && data.kind === "combat-party-builds") {
       if (!Array.isArray(data.builds) || !data.builds.length || data.builds.length > 100)
         throw Error("整队方案文件需要包含 1–100 个方案。");
       return data.builds.flatMap((build, index) => {
         if (!object(build)) throw Error("整队方案结构不完整。");
-        return modern(build.players, `build-${index + 1}:`, `${String(build.name || `方案 ${index + 1}`).slice(0, 60)} / `);
+        return modern(build.players, `build-${index + 1}:`, `${String(build.name || `方案 ${index + 1}`).slice(0, 60)} / `,
+          [build.loadoutName, build.name, data.loadoutName]);
       });
     }
     // mwisim full simulation exports carry players together with results and targets.
     if (object(data) && Array.isArray(data.players) && Array.isArray(data.rows) &&
-        Array.isArray(data.targets) && object(data.simulationSettings)) return modern(data.players);
-    if (object(data?.levels) && object(data.equipment) && Array.isArray(data.abilities)) return modern([data]);
+        Array.isArray(data.targets) && object(data.simulationSettings))
+      return modern(data.players, "", "", [data.loadoutName, data.meta?.loadoutName]);
+    if (object(data?.levels) && object(data.equipment) && Array.isArray(data.abilities))
+      return modern([data], "", "", [data.loadoutName, data.meta?.loadoutName]);
     const legacy = (value, key) => {
       if (typeof value === "string") {
         try { value = JSON.parse(value); } catch (_) { throw Error(`角色 ${key} 的内容不是有效 JSON。`); }
@@ -149,7 +163,8 @@
       const nickname = typeof value.player.name === "string" ? value.player.name :
         typeof value.player.characterName === "string" ? value.player.characterName : "";
       return { key, label: nickname ? `${nickname.slice(0, 60)} · ${key}` : `角色 ${key}`, player: { name: nickname, equipment, abilities,
-        food: consumables("food"), drinks: consumables("drinks"), triggerMap: value.triggerMap } };
+        food: consumables("food"), drinks: consumables("drinks"), triggerMap: value.triggerMap },
+        suggestedName: pickSuggestedName(value.loadoutName, value.meta?.loadoutName, value.player.loadoutName) };
     };
     if (object(data?.player) && Array.isArray(data.player.equipment)) return [legacy(data, "1")];
     const keys = object(data) ? Object.keys(data) : [];
@@ -158,8 +173,8 @@
     return keys.sort().map(key => legacy(data[key], key));
   }
   function importChoices(text) {
-    return parseImport(text).map(({ key, label, player }) => ({ key, label,
-      nickname: typeof player.name === "string" ? player.name : "" }));
+    return parseImport(text).map(({ key, label, player, suggestedName = "" }) => ({ key, label,
+      nickname: typeof player.name === "string" ? player.name : "", suggestedName }));
   }
   function matchImportNickname(choices, nickname) {
     const normalize = value => typeof value === "string" ? value.trim().normalize("NFC") : "";

@@ -175,7 +175,229 @@ async function main() {
     assert.deepEqual(await page.locator('[data-mwi-scene-target]').allTextContents(), ['top-head']);
     await page.evaluate(() => closeLargePicker());
     await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 0);
-    pass('portal pickers highlight target skills, exact equipment, food and drinks in blue; ignore unrelated/empty targets and clear corrected food or closed pickers');
+    // Empty-target remove button highlight + top picker guide bar (including missing/blocked target warning).
+    await page.evaluate(() => {
+      const ctx = MWILoadoutScenes.Adapter.current(), root = document.getElementById('root')._reactRootContainer.current;
+      const panelFiber = root.child.child, previous = panelFiber.child;
+      // Temporarily put a food item in slot 1 (target scene has food slot 1 empty -> null).
+      controller.props.characterLoadoutDict[12].foodItemHrids[1] = '/items/yogurt';
+      paint();
+      const freshCtx = MWILoadoutScenes.Adapter.current();
+      const freshPanel = document.getElementById('root')._reactRootContainer.current.child.child;
+      const owner = MWILoadoutScenes.Adapter.target(freshCtx, { kind: 'food', slot: 1 });
+      const ownerFiber = { stateNode: owner, memoizedProps: fixtureFibers.get(owner)?.memoizedProps, return: freshPanel, sibling: freshPanel.child };
+      freshPanel.child = ownerFiber;
+      const menu = document.createElement('div');
+      menu.className = 'ItemSelector_menu__fixture';
+      const list = document.createElement('div');
+      list.className = 'ItemSelector_itemList__fixture';
+      const removeBtn = document.createElement('div');
+      removeBtn.className = 'ItemSelector_removeButton__fixture';
+      removeBtn.textContent = '移除';
+      list.append(removeBtn);
+      menu.append(list);
+      const listFiber = { stateNode: list, return: ownerFiber };
+      ownerFiber.child = listFiber;
+      document.body.append(menu);
+      window.closeEmptyTargetPicker = () => {
+        menu.remove();
+        controller.props.characterLoadoutDict[12].foodItemHrids[1] = '';
+        paint();
+      };
+    });
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-target]').length === 1);
+    assert.deepEqual(await page.locator('[data-mwi-scene-target]').allTextContents(), ['移除']);
+    assert.match(await page.locator('[data-mwi-picker-guide]').textContent(), /清空槽位/);
+    await page.evaluate(() => closeEmptyTargetPicker());
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-picker-guide]').length === 0);
+
+    // CombatTriggersSetting edit menu: step-by-step dropdown/option highlights, automatic numeric pre-fill without saving, and manual-edit respect.
+    await page.evaluate(() => {
+      const savedBeforeTrigger = structuredClone(controller.props.characterLoadoutDict[12]);
+      // Match food 0 item (/items/yogurt) while keeping its trigger different (empty vs target value=50).
+      controller.props.characterLoadoutDict[12].foodItemHrids[0] = '/items/yogurt';
+      controller.props.characterLoadoutDict[12].consumableCombatTriggersMap = {};
+      paint();
+      const ctx = MWILoadoutScenes.Adapter.current();
+      const freshPanel = document.getElementById('root')._reactRootContainer.current.child.child;
+      const owner = MWILoadoutScenes.Adapter.target(ctx, { kind: 'food', slot: 0 });
+      const ownerFiber = { stateNode: owner, memoizedProps: fixtureFibers.get(owner)?.memoizedProps, return: freshPanel, sibling: freshPanel.child };
+      freshPanel.child = ownerFiber;
+      window.triggerSaveCalls = 0;
+      const editMenu = document.createElement('div');
+      editMenu.className = 'CombatTriggersSetting_combatTriggersEditMenu__fixture';
+      const triggerCtrl = {
+        props: {
+          type: '/combat_trigger_types/consumable', itemHrid: '/items/yogurt',
+          updateCombatTriggersHandler: () => { window.triggerSaveCalls++; }
+        },
+        state: { combatTriggers: [], isActionMenuOpen: true },
+        setState(patch) {
+          this.state = { ...this.state, ...patch };
+          renderTriggerMenu();
+        }
+      };
+      const ctrlFiber = { stateNode: triggerCtrl, return: ownerFiber };
+      const menuFiber = { stateNode: editMenu, return: ctrlFiber };
+      ctrlFiber.child = menuFiber;
+      ownerFiber.child = ctrlFiber;
+      let activeListbox = null;
+      function closeListbox() { activeListbox?.remove(); activeListbox = null; }
+      function renderTriggerMenu() {
+        closeListbox();
+        // Preserve any existing guide node removal cleanly on rerender like React would.
+        editMenu.replaceChildren();
+        const label = document.createElement('div');
+        label.className = 'CombatTriggersSetting_label__fixture';
+        label.textContent = '战斗触发条件';
+        const body = document.createElement('div');
+        body.className = 'CombatTriggersSetting_triggerInputs__fixture';
+        triggerCtrl.state.combatTriggers.forEach((row, idx) => {
+          const rowEl = document.createElement('div');
+          rowEl.className = 'CombatTriggersSetting_combatTrigger__fixture';
+          const inputs = document.createElement('div');
+          inputs.className = 'CombatTriggersSetting_inputs__fixture';
+          const makeDrop = (id, text, field, options) => {
+            const wrap = document.createElement('div');
+            wrap.className = 'Dropdown_dropdown__fixture';
+            wrap.dataset.field = field;
+            const btn = document.createElement('div');
+            btn.setAttribute('role', 'combobox');
+            btn.setAttribute('aria-expanded', 'false');
+            btn.textContent = text;
+            btn.onclick = () => {
+              closeListbox();
+              btn.setAttribute('aria-expanded', 'true');
+              const ul = document.createElement('ul');
+              ul.setAttribute('role', 'listbox');
+              ul.id = 'lb-' + idx + '-' + field;
+              btn.setAttribute('aria-controls', ul.id);
+              for (const [val, lbl] of options) {
+                const li = document.createElement('li');
+                li.setAttribute('role', 'option');
+                li.dataset.value = val;
+                li.textContent = lbl;
+                li.onclick = () => {
+                  const next = triggerCtrl.state.combatTriggers.map(r => ({ ...r }));
+                  next[idx][field] = val;
+                  if (field === 'dependencyHrid') { next[idx].conditionHrid = ''; next[idx].comparatorHrid = ''; next[idx].value = 0; }
+                  if (field === 'conditionHrid') { next[idx].comparatorHrid = ''; next[idx].value = 0; }
+                  if (field === 'comparatorHrid') { next[idx].value = 0; }
+                  triggerCtrl.setState({ combatTriggers: next });
+                };
+                ul.append(li);
+              }
+              document.body.append(ul);
+              activeListbox = ul;
+            };
+            wrap.append(btn);
+            return wrap;
+          };
+          inputs.append(makeDrop('dep', row.dependencyHrid || '选择目标', 'dependencyHrid', [
+            ['/combat_trigger_dependencies/all_enemies', '所有敌人'],
+            ['/combat_trigger_dependencies/self', '自身']
+          ]));
+          if (row.dependencyHrid) {
+            inputs.append(makeDrop('cond', row.conditionHrid || '选择条件', 'conditionHrid', [
+              ['/combat_trigger_conditions/current_mp', '当前魔法值'],
+              ['/combat_trigger_conditions/current_hp', '当前生命值']
+            ]));
+          }
+          if (row.conditionHrid) {
+            inputs.append(makeDrop('comp', row.comparatorHrid || '选择比较', 'comparatorHrid', [
+              ['/combat_trigger_comparators/greater_than', '大于'],
+              ['/combat_trigger_comparators/less_than_equal', '小于或等于']
+            ]));
+          }
+          if (row.comparatorHrid) {
+            const valWrap = document.createElement('div');
+            valWrap.className = 'CombatTriggersSetting_valueInputContainer__fixture';
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.value = String(row.value);
+            input.oninput = e => {
+              const next = triggerCtrl.state.combatTriggers.map(r => ({ ...r }));
+              next[idx].value = e.target.value;
+              triggerCtrl.state = { ...triggerCtrl.state, combatTriggers: next };
+            };
+            valWrap.append(input);
+            inputs.append(valWrap);
+          }
+          const remWrap = document.createElement('div');
+          remWrap.className = 'CombatTriggersSetting_removeButtonContainer__fixture';
+          const remBtn = document.createElement('button');
+          remBtn.textContent = '×';
+          remBtn.onclick = () => {
+            const next = triggerCtrl.state.combatTriggers.filter((_, k) => k !== idx);
+            triggerCtrl.setState({ combatTriggers: next });
+          };
+          remWrap.append(remBtn);
+          rowEl.append(inputs, remWrap);
+          body.append(rowEl);
+        });
+        const btns = document.createElement('div');
+        btns.className = 'CombatTriggersSetting_buttonContainer__fixture';
+        const addBtn = document.createElement('button');
+        addBtn.textContent = '添加条件';
+        addBtn.onclick = () => triggerCtrl.setState({
+          combatTriggers: [...triggerCtrl.state.combatTriggers, { dependencyHrid: '', conditionHrid: '', comparatorHrid: '', value: 0 }]
+        });
+        const defBtn = document.createElement('button');
+        defBtn.textContent = '恢复默认';
+        btns.append(addBtn, defBtn);
+        body.append(btns);
+        const saveBtn = document.createElement('button');
+        saveBtn.textContent = '保存';
+        saveBtn.onclick = () => triggerCtrl.props.updateCombatTriggersHandler();
+        editMenu.append(label, body, saveBtn);
+      }
+      renderTriggerMenu();
+      document.body.append(editMenu);
+      window.triggerCtrl = triggerCtrl;
+      window.closeTriggerMenu = () => {
+        closeListbox();
+        editMenu.remove();
+        controller.props.characterLoadoutDict[12] = savedBeforeTrigger;
+        paint();
+      };
+    });
+    // Step 1: 0 rows vs 1 target row -> highlights 添加条件 & shows guide banner.
+    await page.locator('[data-mwi-trigger-guide]').waitFor();
+    assert.match(await page.locator('[data-mwi-trigger-guide]').textContent(), /自身.*当前生命值.*小于或等于.*50/);
+    await page.waitForFunction(() => [...document.querySelectorAll('[data-mwi-scene-target]')].some(n => n.textContent === '添加条件'));
+    await page.locator('[class*="CombatTriggersSetting_buttonContainer__"] button').first().click();
+    // Step 2: Row added -> highlights Dependency dropdown; opening listbox highlights 自身.
+    await page.waitForFunction(() => document.querySelector('[data-field="dependencyHrid"][data-mwi-scene-target]'));
+    await page.locator('[data-field="dependencyHrid"] [role="combobox"]').click();
+    await page.waitForFunction(() => document.querySelector('li[data-value="/combat_trigger_dependencies/self"][data-mwi-scene-target]'));
+    await page.locator('li[data-value="/combat_trigger_dependencies/self"]').click();
+    // Step 3: Condition dropdown highlighted -> pick 当前生命值.
+    await page.waitForFunction(() => document.querySelector('[data-field="conditionHrid"][data-mwi-scene-target]'));
+    await page.locator('[data-field="conditionHrid"] [role="combobox"]').click();
+    await page.waitForFunction(() => document.querySelector('li[data-value="/combat_trigger_conditions/current_hp"][data-mwi-scene-target]'));
+    await page.locator('li[data-value="/combat_trigger_conditions/current_hp"]').click();
+    // Step 4: Comparator dropdown highlighted -> pick 小于或等于 -> auto-prefills 50 & highlights 保存!
+    await page.waitForFunction(() => document.querySelector('[data-field="comparatorHrid"][data-mwi-scene-target]'));
+    await page.locator('[data-field="comparatorHrid"] [role="combobox"]').click();
+    await page.waitForFunction(() => document.querySelector('li[data-value="/combat_trigger_comparators/less_than_equal"][data-mwi-scene-target]'));
+    await page.locator('li[data-value="/combat_trigger_comparators/less_than_equal"]').click();
+    await page.waitForFunction(() => document.querySelector('[class*="CombatTriggersSetting_valueInputContainer__"] input')?.value === '50');
+    assert.equal(await page.evaluate(() => window.triggerSaveCalls), 0, 'prefill must never auto-save triggers');
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-scene-prefilled]').length === 1);
+    assert.match(await page.locator('[data-mwi-trigger-guide]').textContent(), /已预填/);
+    assert.equal(await page.locator('[data-mwi-trigger-guide]').getAttribute('data-state'), 'ready');
+    await page.waitForFunction(() => [...document.querySelectorAll('[data-mwi-scene-target]')].some(n => n.textContent === '保存'));
+    // Step 5: Manual edit away from prefilled 50 -> must NOT overwrite user's 40, highlights input instead.
+    await page.locator('[class*="CombatTriggersSetting_valueInputContainer__"] input').fill('40');
+    await page.waitForFunction(() => document.querySelector('[class*="CombatTriggersSetting_valueInputContainer__"][data-mwi-scene-target]'));
+    assert.equal(await page.locator('[class*="CombatTriggersSetting_valueInputContainer__"] input').inputValue(), '40');
+    assert.equal(await page.locator('[data-mwi-trigger-guide]').getAttribute('data-state'), 'guide');
+    // Step 6: Extra row -> highlights its × remove button.
+    await page.locator('[class*="CombatTriggersSetting_buttonContainer__"] button').first().click();
+    await page.waitForFunction(() => document.querySelector('[class*="CombatTriggersSetting_removeButtonContainer__"] button[data-mwi-scene-target]'));
+    await page.evaluate(() => closeTriggerMenu());
+    await page.waitForFunction(() => document.querySelectorAll('[data-mwi-trigger-guide], [data-mwi-scene-prefilled]').length === 0);
+    pass('portal pickers highlight target skills, exact equipment, food, drinks, empty-slot remove and combat trigger dropdowns/options with safe numeric pre-fill');
     const changes = await host.locator("li").count(); assert.ok(changes >= 6);
     assert.ok(await page.locator("[data-mwi-scene-change]").count() >= 5);
     assert.equal(await page.locator("[data-mwi-scene-comparing]").count(), 1);
@@ -315,7 +537,30 @@ async function main() {
     const afterUpdate = await page.evaluate(async () => (await MWILoadoutScenes.Store.list(MWILoadoutScenes.Adapter.current().scope)).find(row => row.name === "远程单人·改名"));
     assert.deepEqual(afterUpdate.snapshot.raw, changed);
     pass("desktop/mobile update confirmation keeps the original button bounds, cancel sits to its left, and two clicks at one coordinate save the selected scene");
-    await action("移除"); await host.getByRole("button", { name: "确认移除", exact: true }).click();
+    // Direct in-place remove confirmation in active bar: same button bounds, cancel to its right, two clicks at one coordinate delete.
+    const removeDirect = host.locator(".active-actions").getByRole("button", { name: "移除", exact: true });
+    await removeDirect.scrollIntoViewIfNeeded();
+    const removeBefore = await removeDirect.boundingBox();
+    await removeDirect.click();
+    const removeConfirm = host.locator(".active-actions").getByRole("button", { name: "确认移除", exact: true });
+    const removeAfter = await removeConfirm.boundingBox();
+    for (const key of ["x", "y", "width", "height"]) assert.ok(Math.abs(removeBefore[key] - removeAfter[key]) < 1, `direct remove ${key}`);
+    const cancelRemoveBox = await host.locator(".active-actions").getByRole("button", { name: "取消", exact: true }).boundingBox();
+    assert.ok(cancelRemoveBox.x >= removeAfter.x + removeAfter.width - 1);
+    await host.locator(".active-actions").getByRole("button", { name: "取消", exact: true }).click();
+    await removeDirect.waitFor();
+    // Context menu from a scene chip opens below .choices (not above) and confirms remove in-place at the same bounds.
+    await host.locator('.choices [data-scene-id][aria-pressed="true"]').click({ button: "right" });
+    const choicesBox = await host.locator(".choices").boundingBox();
+    const menuBox = await host.locator("#scene-menu").boundingBox();
+    assert.ok(menuBox.y >= choicesBox.y + choicesBox.height - 1, "scene context menu opens below choices");
+    const menuRemove = host.locator("#scene-menu").getByRole("button", { name: "移除", exact: true });
+    const menuRemoveBefore = await menuRemove.boundingBox();
+    await menuRemove.click();
+    const menuConfirm = host.locator("#scene-menu").getByRole("button", { name: "确认移除", exact: true });
+    const menuRemoveAfter = await menuConfirm.boundingBox();
+    for (const key of ["x", "y", "width", "height"]) assert.ok(Math.abs(menuRemoveBefore[key] - menuRemoveAfter[key]) < 1, `menu remove ${key}`);
+    await menuConfirm.click();
     await status.filter({ hasText: "已移除" }).waitFor(); assert.equal(await host.locator(".choices button[data-scene-id]").count(), 2);
     assert.equal(await host.getByRole("button", { name: "新建子方案" }).evaluate(node => node.getRootNode().activeElement === node), true);
     await host.getByRole("button", { name: "撤销移除", exact: true }).click();

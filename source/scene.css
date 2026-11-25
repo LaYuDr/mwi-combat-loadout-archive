@@ -437,10 +437,18 @@ textarea { resize: vertical; }
   gap: 2px;
 }
 .active-actions-right { margin-inline-start: auto; gap: 4px; }
-.update-button {
+.update-button,
+.remove-button {
   width: calc(4em + 24px);
   flex: 0 0 auto;
   text-align: center;
+}
+.remove-button.danger,
+.remove-button.danger:hover:not(:disabled) {
+  background: rgba(236, 134, 142, 0.24);
+  border-color: rgba(236, 134, 142, 0.65);
+  color: #ffd9dc;
+  font-weight: 600;
 }
 
 /* Difference List */
@@ -546,6 +554,9 @@ pre {
   border-radius: 7px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
 }
+.menu.menu-inline {
+  margin: 6px 0 0;
+}
 .menu-group {
   display: grid;
   gap: 3px;
@@ -577,6 +588,13 @@ pre {
 }
 .menu button.danger-text { color: var(--scene-danger); }
 .menu button.danger-text:hover:not(:disabled) { background: var(--scene-danger-bg); color: var(--scene-danger); }
+.menu button.danger,
+.menu button.danger:hover:not(:disabled) {
+  background: rgba(236, 134, 142, 0.24);
+  border-color: rgba(236, 134, 142, 0.65);
+  color: #ffd9dc;
+  font-weight: 600;
+}
 
 /* Notice / Undo / Error — Non-shifting Floating Toast */
 .notice,
