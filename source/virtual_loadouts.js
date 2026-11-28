@@ -176,7 +176,7 @@
       })
     }, null, 2);
   }
-  async function importBackup(character, text) {
+  async function importBackup(character, text, expected = []) {
     if (app.Adapter.cloudContext(false)?.character !== character) throw Error("角色已变化，请重新打开配装总览。");
     if (typeof text !== "string" || text.length > 5000000) throw Error("备份超过 5 MB，未导入。");
     let data;
@@ -218,22 +218,40 @@
       catch (_) { return app.Core.stable(scene.snapshot); }
     };
     return transaction(scope, "readwrite", (rows, store) => {
-      const existing = [...rows];
+      const existing = [...rows], additions = [], updates = [], conflicts = [], names = new Set();
       let added = 0, skipped = 0;
       for (const item of parsed) {
         if (item.board) {
           if (existing.some(row => row.board === item.board)) { skipped++; continue; }
         } else {
+          const name = item.scenes[0].name;
+          if (names.has(name)) throw Error("备份中有重复名称，请先区分名称再导入。");
+          names.add(name);
           const targetKey = normalizeKey(item.scenes[0]);
           if (existing.some(row => !row.board && row.scenes[0]?.name === item.scenes[0].name && normalizeKey(row.scenes[0]) === targetKey)) {
             skipped++; continue;
           }
+          const sameName = rows.filter(row => !row.board && row.scenes[0]?.name === name);
+          if (sameName.length > 1) throw Error("本地有多个同名虚拟配装，请先区分名称再导入。");
+          if (sameName.length) {
+            const before = sameName[0];
+            conflicts.push(before);
+            updates.push({ ...before, checked: Date.now(), scenes: [{ ...before.scenes[0], snapshot: item.scenes[0].snapshot }] });
+            continue;
+          }
         }
-        store.add(item);
+        additions.push(item);
         existing.push(item);
         added++;
       }
-      return { added, skipped };
+      const signature = list => app.Core.stable(list.map(row => [row.key, row.token, row.scenes]).sort((a, b) => a[0].localeCompare(b[0])));
+      if (signature(conflicts) !== signature(expected)) {
+        if (!conflicts.length) throw Error("待覆盖的虚拟配装已变化，请重新导入。");
+        throw Object.assign(Error("再次点击将覆盖备份中的同名虚拟配装。"), { code: "NAME_EXISTS", existing: conflicts });
+      }
+      for (const row of additions) store.add(row);
+      for (const row of updates) store.put(row);
+      return { added, skipped, ...(updates.length ? { overwritten: updates.length } : {}) };
     });
   }
   function update(character, entry, title, snapshot) {

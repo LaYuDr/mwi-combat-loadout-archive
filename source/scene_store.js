@@ -127,17 +127,29 @@
       return record(ctx, row.name, snapshot.raw);
     });
   }
-  async function importBackup(ctx, text) {
+  async function importBackup(ctx, text, expected = []) {
     const incoming = parseBackup(text, ctx);
     return transaction(ctx.scope, "readwrite", (rows, store) => {
-      const active = rows.filter(row => !row.removedAt), added = [];
+      const active = rows.filter(row => !row.removedAt), added = [], updated = [], conflicts = [], names = new Set();
       for (const row of incoming) {
+        if (names.has(row.name)) throw Error("备份中有重复名称，请先区分名称再导入。");
+        names.add(row.name);
         if (active.some(old => old.name === row.name && Core().stable(old.snapshot) === Core().stable(row.snapshot))) continue;
-        unique(active, row.name);
-        active.push(row); added.push(row);
+        const matches = active.filter(old => old.name === row.name);
+        if (matches.length > 1) throw Error("本地有多个同名子方案，请先改名再导入。");
+        if (matches.length) {
+          conflicts.push(matches[0]);
+          updated.push({ ...revise(matches[0]), snapshot: row.snapshot });
+        } else added.push(row);
+      }
+      const signature = list => Core().stable(list.map(row => [row.id, row.revision]).sort());
+      if (signature(conflicts) !== signature(expected)) {
+        if (!conflicts.length) throw Error("待覆盖的子方案已变化，请重新选择备份。");
+        throw Object.assign(Error("再次点击将覆盖备份中的同名子方案。"), { code: "NAME_EXISTS", existing: conflicts });
       }
       for (const row of added) store.add(row);
-      return added.length;
+      for (const row of updated) store.put(row);
+      return added.length + updated.length;
     });
   }
   async function mergeCloud(owner, loadoutId, remote, merge) {

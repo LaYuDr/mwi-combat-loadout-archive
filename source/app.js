@@ -256,6 +256,7 @@
   }
   function setMenu(open) {
     if (!mounted) return;
+    if (!open) mounted.resetBackupOverwrite?.();
     let clearedRemove = false;
     if (open) {
       const inline = menuId !== null && activeTab === "scenes";
@@ -532,20 +533,51 @@
     });
     const exportButton = button("导出全部", download);
     const file = el("input", null, { type: "file", accept: ".json,application/json", "aria-label": "选择子方案备份", hidden: "" });
-    const importButton = button("导入备份", () => file.click());
+    let backupOverwrite = null;
+    const backupNote = el("p", "", { class: "muted", role: "status", hidden: "" });
+    function resetBackupOverwrite() {
+      backupOverwrite = null;
+      importButton.textContent = "导入备份";
+      backupNote.hidden = true;
+    }
+    async function importBackupText(fresh, text, expected = []) {
+      const ui = mounted;
+      let count;
+      try { count = await Store.importBackup(fresh, text, expected); }
+      catch (error) {
+        if (error.code !== "NAME_EXISTS" || mounted !== ui) throw error;
+        backupOverwrite = { scope: fresh.scope, text, rows: error.existing };
+        importButton.textContent = "再次点击覆盖";
+        backupNote.textContent = "将覆盖：" + error.existing.map(row => `“${row.name}”`).join("、");
+        backupNote.hidden = false;
+        setMenu(true);
+        return;
+      }
+      notify(fresh);
+      if (mounted !== ui) return;
+      resetBackupOverwrite();
+      setMenu(false);
+      await reload();
+      if (mounted === ui) message(`已导入 ${count} 项`);
+    }
+    const importButton = button("导入备份", () => {
+      if (!backupOverwrite) { file.click(); return; }
+      const pending = backupOverwrite;
+      run(async () => {
+        const fresh = currentContext();
+        if (pending.scope !== fresh.scope) { resetBackupOverwrite(); throw Error("当前配装已变化，请重新选择备份。"); }
+        await importBackupText(fresh, pending.text, pending.rows);
+      });
+    }, { style: "min-width:9em" });
     file.addEventListener("change", () => run(async () => {
       const input = file.files?.[0];
       if (!input) return;
-      if (input.size > 5000000) throw Error("备份超过 5 MB，未导入。");
-      const fresh = currentContext(), ui = mounted, text = await input.text();
-      if (currentContext().scope !== fresh.scope) throw Error("当前父配装已变化，未导入备份，请在原配装下重试。");
-      const count = await Store.importBackup(fresh, text);
-      notify(fresh);
-      if (mounted !== ui) return;
+      resetBackupOverwrite();
       file.value = "";
-      setMenu(false);
-      await reload();
-      message(`已导入 ${count} 项`);
+      if (input.size > 5000000) throw Error("备份超过 5 MB，未导入。");
+      const fresh = currentContext(), text = await input.text();
+      if (currentContext().scope !== fresh.scope) throw Error("当前父配装已变化，未导入备份，请在原配装下重试。");
+      await importBackupText(fresh, text);
     }));
     menuLoadoutRow.append(virtualButton, menuImportSolo, simulatorExportButton, exportButton, importButton);
 
@@ -568,7 +600,7 @@
       // Keep the shared client's settings host in light DOM so its observer can find it.
       host.append(el("div", null, { slot: "usage-settings", "data-layu-usage-settings": "mwi_loadout", lang: "zh-CN" }));
     }
-    menu.append(menuContextGroup, menuLoadoutRow, file);
+    menu.append(menuContextGroup, menuLoadoutRow, backupNote, file);
 
     // Tab 1: Scenes workspace
     const paneScenes = el("div", null, { class: "pane", role: "tabpanel" });
@@ -663,7 +695,14 @@
     }, { class: "compact-btn ghost-btn", hidden: "" });
     importMatchRow.append(importMatch, changeImportMatch);
     let parsedImportText = null, parsedImportOwner = null, parsedImportChoices = [], autoFilledImportName = "", importFileFallbackName = "";
+    let importOverwrite = null;
+    function resetImportOverwrite() {
+      importOverwrite = null;
+      saveImport.textContent = "保存为子方案";
+      importOverwriteNote.hidden = true;
+    }
     function resetImportChoices() {
+      resetImportOverwrite();
       parsedImportText = parsedImportOwner = null;
       parsedImportChoices = [];
       importChoice.replaceChildren();
@@ -757,11 +796,13 @@
       }
     }
     function openImportSession() {
+      resetImportOverwrite();
       autoFilledImportName = "";
       importFileFallbackName = "";
       tryRefreshImportChoices();
     }
     importText.addEventListener("input", () => {
+      resetImportOverwrite();
       importFileFallbackName = "";
       tryRefreshImportChoices();
     });
@@ -774,7 +815,8 @@
       }
       try { refreshImportChoices(); message(""); } catch (error) { message(error.message, true); }
     });
-    importChoice.addEventListener("change", () => applySuggestedImportName(resolveEffectiveImportName()));
+    importName.addEventListener("input", resetImportOverwrite);
+    importChoice.addEventListener("change", () => { resetImportOverwrite(); applySuggestedImportName(resolveEffectiveImportName()); });
     const soloFile = el("input", null, {
       type: "file", accept: ".json,.txt,application/json,text/plain", hidden: "", "aria-label": "选择模拟器配装文件"
     });
@@ -786,7 +828,8 @@
     closeImport.append(svgIcon("close"));
     const importHead = el("div", null, { class: "editor-head" });
     importHead.append(el("span", "导入战斗配装", { class: "editor-title" }), closeImport);
-    const saveImport = el("button", "保存为子方案", { type: "submit", class: "compact-btn primary" });
+    const saveImport = el("button", "保存为子方案", { type: "submit", class: "compact-btn primary", style: "min-width:9em" });
+    const importOverwriteNote = el("p", "", { class: "muted", role: "status", hidden: "" });
     const importActions = el("div", null, { class: "actions split-actions" });
     const importRight = el("div", null, { class: "actions" });
     importRight.append(cancelImport, saveImport);
@@ -796,7 +839,7 @@
       el("label", "子方案名称", { for: "scene-import-name", class: "sr-only" }), importName,
       el("label", "配装内容", { for: "scene-import-text", class: "sr-only" }), importText,
       importMatchRow, importChoiceRow,
-      importActions, soloFile
+      importActions, importOverwriteNote, soloFile
     );
     soloFile.addEventListener("change", () => run(async () => {
       const input = soloFile.files?.[0];
@@ -834,7 +877,17 @@
           autoFilledImportName = title;
         }
         const raw = Core.importSolo(importText.value, fresh.raw, fresh.props.characterInfo.characterID, importChoice.value);
-        const row = await Store.create({ ...fresh, raw }, title);
+        const key = Core.stable([fresh.scope, title, raw]);
+        let row;
+        try { row = await Store.create({ ...fresh, raw }, title, importOverwrite?.key === key ? importOverwrite.row : null); }
+        catch (error) {
+          if (error.code !== "NAME_EXISTS" || mounted !== ui) throw error;
+          importOverwrite = { key, row: error.existing };
+          saveImport.textContent = "再次点击覆盖";
+          importOverwriteNote.textContent = `再次点击将用导入内容覆盖“${title}”。`;
+          importOverwriteNote.hidden = false;
+          return;
+        }
         notify(fresh);
         if (mounted !== ui) return;
         selectedId = row.id;
@@ -846,7 +899,7 @@
         if (mounted === ui) message("");
       });
       if (mounted !== ui) return;
-      if (success) importSoloButton.focus();
+      if (success && importForm.hidden) importSoloButton.focus();
       else if (shouldFocusName && !importForm.hidden) importName.focus();
     });
 
@@ -1015,7 +1068,7 @@
     mounted = {
       cloud, host, shadow, header, tabScenes, tabCloud, tabCloudDot, paneScenes, paneCloud,
       choices, add, menu, menuContextGroup, menuTargetLabel, menuImportSolo,
-      form, name, save, cancelNew, overwriteNote,
+      form, name, save, cancelNew, overwriteNote, resetBackupOverwrite,
       activeScene, diffToggle, activeDot, activeName, activeSep, summary, diffCaret, stopDirect,
       activeActions, renameDirect, removeDirect, cancelRemove, update, cancelUpdate,
       renameButton, remove, stop, undoButton, manage,

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.17] - 2026-11-28
+
+### Changed
+
+- 补齐模拟器配装导入、虚拟分享及备份导入的同名二次覆盖确认；校验目标版本，批量备份确认前不写入。
+
 ## [0.2.16] - 2026-11-28
 
 ### Changed

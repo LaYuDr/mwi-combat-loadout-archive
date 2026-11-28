@@ -496,7 +496,7 @@ async function main() {
     await host.getByRole("button", { name: "远程迷宫", exact: true }).click();
     await host.getByRole("button", { name: "新建子方案" }).click();
     await host.getByLabel("新子方案名称").fill("远程迷宫"); await host.getByRole("button", { name: "保存", exact: true }).click();
-    await status.filter({ hasText: "已有同名" }).waitFor();
+    await host.getByRole("button", { name: "再次点击覆盖", exact: true }).waitFor();
     assert.equal(await host.getByLabel("新子方案名称").inputValue(), "远程迷宫");
     assert.equal(await host.locator(".choices button[data-scene-id]").count(), 3);
     pass("manual corrections clear highlights, three named scenes coexist, and duplicate names preserve input without overwriting");

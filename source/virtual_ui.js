@@ -417,6 +417,8 @@
         event.preventDefault();
         if (this.state.busy) return;
         this.setState({ busy: true, notice: "", noticeError: false });
+        const key = this.props.owner + "|" + this.state.importText;
+        const expected = this.state.importOverwrite?.key === key ? this.state.importOverwrite.existing : null;
         try {
           if (app.Adapter.cloudContext(false)?.character !== this.props.owner) throw Error("角色已变化，请重新打开配装总览。");
           const text = this.state.importText;
@@ -427,29 +429,35 @@
           if (parsedJson?.format === "mwi-vue-solo")
             throw Error("这是战斗模拟器配装，请在战斗配装卡片的「子方案 → 导入」中导入。");
           if (parsedJson?.format === "mwi-virtual-loadouts-backup") {
-            const { added, skipped } = await app.Virtual.importBackup(this.props.owner, text);
+            const { added, skipped, overwritten = 0 } = await app.Virtual.importBackup(this.props.owner, text, Array.isArray(expected) ? expected : []);
             await this.reload();
             if (this.alive) {
-              this.setState({ importOpen: false, importText: "" });
-              this.flashNotice(added ? `已导入 ${added} 项虚拟配装${skipped ? `（跳过 ${skipped} 项重复）` : ""}` : "内容均已存在，未重复导入");
+              this.setState({ importOpen: false, importText: "", importOverwrite: null });
+              this.flashNotice(added || overwritten ? `已新增 ${added} 项，覆盖 ${overwritten} 项${skipped ? `（跳过 ${skipped} 项重复）` : ""}` : "内容均已存在，未重复导入");
             }
           } else {
             const scene = app.VirtualDraft.parse(text);
-            await app.Virtual.save(this.props.owner, scene.name, scene.snapshot);
+            await app.Virtual.save(this.props.owner, scene.name, scene.snapshot, expected);
             await this.reload();
-            if (this.alive) this.setState({ importOpen: false, importText: "", notice: "", noticeError: false });
+            if (this.alive) this.setState({ importOpen: false, importText: "", importOverwrite: null, notice: "", noticeError: false });
           }
-        } catch (error) { this.fail(error); }
+        } catch (error) {
+          if (error.code === "NAME_EXISTS" && this.alive) {
+            const entries = Array.isArray(error.existing) ? error.existing : [error.existing];
+            this.setState({ importOverwrite: { key, existing: error.existing }, noticeError: false,
+              notice: "再次点击将覆盖：" + entries.map(row => `“${row.scenes[0].name}”`).join("、") });
+          } else { if (this.alive) this.setState({ importOverwrite: null }); this.fail(error); }
+        }
         finally { if (this.alive) this.setState({ busy: false }); }
       };
       handleImportFile = async event => {
         const input = event.target, file = input.files?.[0];
         if (!file) return;
-        this.setState({ busy: true, notice: "", noticeError: false });
+        this.setState({ busy: true, notice: "", noticeError: false, importOverwrite: null });
         try {
           if (file.size > 5000000) throw Error("文件超过 5 MB 大小限制。");
           const text = await file.text();
-          if (this.alive) this.setState({ importText: text });
+          if (this.alive) this.setState({ importText: text, importOverwrite: null });
         } catch (error) { this.fail(error); }
         finally { input.value = ""; if (this.alive) this.setState({ busy: false }); }
       };
@@ -474,7 +482,7 @@
                 className: "mwi-overview-button mwi-overview-ghost-btn" + (importOpen ? " mwi-overview-scenes-active" : ""),
                 "aria-expanded": importOpen,
                 disabled: Boolean(editor),
-                onClick: () => this.setState({ importOpen: !importOpen, subscribeOpen: false, notice: "" })
+                onClick: () => this.setState({ importOpen: !importOpen, subscribeOpen: false, notice: "", importOverwrite: null })
               }, "导入分享"),
               h("button", {
                 type: "button",
@@ -524,7 +532,7 @@
             h("textarea", {
               required: true, maxLength: 5000000, rows: 4, value: this.state.importText,
               "aria-label": "虚拟配装分享内容", placeholder: "粘贴单条虚拟配装分享或虚拟配装备份 JSON，或选择文件", disabled: busy,
-              onChange: e => this.setState({ importText: e.target.value })
+              onChange: e => this.setState({ importText: e.target.value, importOverwrite: null, notice: "" })
             }),
             h("input", {
               type: "file", accept: ".json,.txt,application/json", hidden: true,
@@ -543,8 +551,8 @@
                   onClick: () => this.setState({ importOpen: false, notice: "" })
                 }, "取消"),
                 h("button", {
-                  type: "submit", className: "mwi-overview-button mwi-overview-primary", disabled: busy
-                }, "导入为新配装")))),
+                  type: "submit", className: "mwi-overview-button mwi-overview-primary", disabled: busy, style: { minWidth: "9em" }
+                }, this.state.importOverwrite ? "再次点击覆盖" : "导入为新配装")))),
 
           subscribeOpen && h("form", {
             className: "mwi-virtual-subscribe",
