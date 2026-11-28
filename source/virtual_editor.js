@@ -630,7 +630,7 @@
       change(work) {
         try {
           const raw = Core.copy(this.state.raw); work(raw);
-          this.setState({ raw, dirty: true, discard: false, notice: "" });
+          this.setState({ raw, dirty: true, discard: false, notice: "", overwrite: null });
         } catch (error) { this.setState({ notice: error.message }); }
       }
       itemName(id, ability = false) {
@@ -679,14 +679,22 @@
         event.preventDefault();
         if (this.state.busy) return;
         this.setState({ busy: true, notice: "" });
+        let attemptKey;
         try {
           const title = Core.name(this.state.title);
           validateDraft(this.state.raw, this.props.catalog);
           const snapshot = portable(Core.snapshot(this.state.raw), title);
+          attemptKey = Core.stable([title, snapshot, asNew]);
+          const expected = this.state.overwrite?.key === attemptKey ? this.state.overwrite.entry : null;
           this.cleared = true;
           tooltip.hide();
-          await this.props.onSave(title, snapshot, asNew);
-        } catch (error) { this.cleared = false; if (this.alive) this.setState({ notice: error.message }); }
+          await this.props.onSave(title, snapshot, asNew, expected);
+        } catch (error) {
+          this.cleared = false;
+          if (this.alive) this.setState(error.code === "NAME_EXISTS"
+            ? { overwrite: { key: attemptKey, entry: error.existing, asNew }, notice: "" }
+            : { overwrite: null, notice: error.message });
+        }
         finally { if (this.alive) this.setState({ busy: false }); }
       };
       showTip(event, kind, id, enh = 0) {
@@ -779,7 +787,7 @@
                   value: title, maxLength: 60, required: true,
                   placeholder: "输入配装名称",
                   ref: node => { this.nameInput = node; },
-                  onChange: e => this.setState({ title: e.target.value, dirty: true })
+                  onChange: e => this.setState({ title: e.target.value, dirty: true, overwrite: null })
                 })),
               h("button", {
                 type: "button", className: "mwi-overview-button mwi-overview-icon-btn mwi-overview-ghost-btn",
@@ -931,8 +939,14 @@
                   this.state.discard && btn("继续编辑", () => this.setState({ discard: false }), { className: "mwi-overview-button mwi-overview-ghost-btn" }),
                   btn(this.state.discard ? "确认放弃" : "取消", this.requestClose,
                     { className: this.state.discard ? "mwi-overview-button mwi-overview-danger" : "mwi-overview-button mwi-overview-ghost-btn" }),
-                  this.props.scene && btn("另存为新", event => { if (event.currentTarget.form.reportValidity()) this.save(event, true); }, { className: "mwi-overview-button mwi-overview-ghost-btn" }),
-                  h("button", { type: "submit", className: "mwi-overview-button mwi-overview-primary", disabled: busy }, "保存虚拟配装"))))));
+                  this.props.scene && btn(this.state.overwrite?.asNew ? "再次点击覆盖" : "另存为新", event => { if (event.currentTarget.form.reportValidity()) this.save(event, true); }, {
+                    className: "mwi-overview-button mwi-overview-ghost-btn", style: { minWidth: "9em" },
+                    title: this.state.overwrite?.asNew ? `将覆盖“${this.state.title.trim()}”的原有内容` : "另存为新配装"
+                  }),
+                  h("button", { type: "submit", className: "mwi-overview-button mwi-overview-primary", disabled: busy,
+                    style: { minWidth: "9em" },
+                    title: this.state.overwrite && !this.state.overwrite.asNew ? `将覆盖“${this.state.title.trim()}”的原有内容` : "保存虚拟配装"
+                  }, this.state.overwrite && !this.state.overwrite.asNew ? "再次点击覆盖" : "保存虚拟配装"))))));
       }
     };
   };

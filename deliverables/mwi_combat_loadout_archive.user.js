@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         配装助手
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive
-// @version      0.2.15
+// @version      0.2.16
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues
@@ -509,7 +509,7 @@
     return { dispose, report, client };
   }
   if (typeof module !== "undefined" && module.exports) module.exports = { createUsageClient, boot };
-  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.15","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
+  try { boot({"pluginId":"mwi_loadout","name":"配装助手","version":"0.2.16","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
 setValue: typeof GM_setValue === "function" ? GM_setValue : null,
 listen: typeof GM_addValueChangeListener === "function" ? GM_addValueChangeListener : null,
 unlisten: typeof GM_removeValueChangeListener === "function" ? GM_removeValueChangeListener : null,
@@ -1620,10 +1620,20 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     return { id: crypto.randomUUID(), scope: ctx.scope, owner: ctx.owner, parentId: raw.id,
       name: Core().name(title), snapshot: Core().snapshot(raw), revision: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now(), removedAt: null };
   }
-  async function create(ctx, title) {
+  async function create(ctx, title, expected = null) {
     const row = record(ctx, title, ctx.raw);
     return transaction(ctx.scope, "readwrite", (rows, store) => {
-      unique(rows, row.name); store.add(row); return row;
+      const matches = rows.filter(old => !old.removedAt && old.name === row.name);
+      if (matches.length > 1) throw Error("有多个同名子方案，请先改名后再保存。");
+      const before = matches[0];
+      if (before) {
+        if (!expected || expected.id !== before.id || expected.revision !== before.revision)
+          throw Object.assign(Error(`再次点击将覆盖“${row.name}”。`), { code: "NAME_EXISTS", existing: before });
+        const updated = { ...revise(before), snapshot: row.snapshot };
+        store.put(updated); return updated;
+      }
+      if (expected) throw Error("待覆盖的子方案已变化，请重新保存。");
+      store.add(row); return row;
     });
   }
   function revise(before) {
@@ -2595,12 +2605,28 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     })().finally(() => pending.delete(entry.key));
     pending.set(entry.key, task); return task;
   }
-  function save(character, title, snapshot) {
+  function save(character, title, snapshot, expected) {
     const validated = app.Core.validateSnapshot(snapshot), scope = owner(character);
     const row = { key: scope + "|" + crypto.randomUUID(), token: crypto.randomUUID(), owner: scope,
       board: null, scenes: [{ id: crypto.randomUUID(), name: app.Core.name(title), snapshot: validated }],
       checked: Date.now(), error: "" };
-    return transaction(scope, "readwrite", (_, store) => { store.add(row); return row; });
+    return transaction(scope, "readwrite", (rows, store) => {
+      // Only the interactive create flow opts into same-name replacement.
+      if (expected !== undefined) {
+        const matches = rows.filter(old => !old.board && old.scenes[0]?.name === row.scenes[0].name);
+        if (matches.length > 1) throw Error("有多个同名虚拟配装，请换个名称或打开指定配装编辑。");
+        const before = matches[0];
+        if (before) {
+          if (!expected || expected.key !== before.key || expected.token !== before.token ||
+              app.Core.stable(expected.scenes) !== app.Core.stable(before.scenes))
+            throw Object.assign(Error(`再次点击将覆盖“${row.scenes[0].name}”。`), { code: "NAME_EXISTS", existing: before });
+          const updated = { ...before, checked: Date.now(), scenes: [{ ...before.scenes[0], snapshot: validated }] };
+          store.put(updated); return updated;
+        }
+        if (expected) throw Error("待覆盖的虚拟配装已变化，请重新保存。");
+      }
+      store.add(row); return row;
+    });
   }
   function remove(character, entry) {
     return transaction(owner(character), "readwrite", (rows, store) => {
@@ -3479,7 +3505,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       change(work) {
         try {
           const raw = Core.copy(this.state.raw); work(raw);
-          this.setState({ raw, dirty: true, discard: false, notice: "" });
+          this.setState({ raw, dirty: true, discard: false, notice: "", overwrite: null });
         } catch (error) { this.setState({ notice: error.message }); }
       }
       itemName(id, ability = false) {
@@ -3528,14 +3554,22 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         event.preventDefault();
         if (this.state.busy) return;
         this.setState({ busy: true, notice: "" });
+        let attemptKey;
         try {
           const title = Core.name(this.state.title);
           validateDraft(this.state.raw, this.props.catalog);
           const snapshot = portable(Core.snapshot(this.state.raw), title);
+          attemptKey = Core.stable([title, snapshot, asNew]);
+          const expected = this.state.overwrite?.key === attemptKey ? this.state.overwrite.entry : null;
           this.cleared = true;
           tooltip.hide();
-          await this.props.onSave(title, snapshot, asNew);
-        } catch (error) { this.cleared = false; if (this.alive) this.setState({ notice: error.message }); }
+          await this.props.onSave(title, snapshot, asNew, expected);
+        } catch (error) {
+          this.cleared = false;
+          if (this.alive) this.setState(error.code === "NAME_EXISTS"
+            ? { overwrite: { key: attemptKey, entry: error.existing, asNew }, notice: "" }
+            : { overwrite: null, notice: error.message });
+        }
         finally { if (this.alive) this.setState({ busy: false }); }
       };
       showTip(event, kind, id, enh = 0) {
@@ -3628,7 +3662,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
                   value: title, maxLength: 60, required: true,
                   placeholder: "输入配装名称",
                   ref: node => { this.nameInput = node; },
-                  onChange: e => this.setState({ title: e.target.value, dirty: true })
+                  onChange: e => this.setState({ title: e.target.value, dirty: true, overwrite: null })
                 })),
               h("button", {
                 type: "button", className: "mwi-overview-button mwi-overview-icon-btn mwi-overview-ghost-btn",
@@ -3780,8 +3814,14 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
                   this.state.discard && btn("继续编辑", () => this.setState({ discard: false }), { className: "mwi-overview-button mwi-overview-ghost-btn" }),
                   btn(this.state.discard ? "确认放弃" : "取消", this.requestClose,
                     { className: this.state.discard ? "mwi-overview-button mwi-overview-danger" : "mwi-overview-button mwi-overview-ghost-btn" }),
-                  this.props.scene && btn("另存为新", event => { if (event.currentTarget.form.reportValidity()) this.save(event, true); }, { className: "mwi-overview-button mwi-overview-ghost-btn" }),
-                  h("button", { type: "submit", className: "mwi-overview-button mwi-overview-primary", disabled: busy }, "保存虚拟配装"))))));
+                  this.props.scene && btn(this.state.overwrite?.asNew ? "再次点击覆盖" : "另存为新", event => { if (event.currentTarget.form.reportValidity()) this.save(event, true); }, {
+                    className: "mwi-overview-button mwi-overview-ghost-btn", style: { minWidth: "9em" },
+                    title: this.state.overwrite?.asNew ? `将覆盖“${this.state.title.trim()}”的原有内容` : "另存为新配装"
+                  }),
+                  h("button", { type: "submit", className: "mwi-overview-button mwi-overview-primary", disabled: busy,
+                    style: { minWidth: "9em" },
+                    title: this.state.overwrite && !this.state.overwrite.asNew ? `将覆盖“${this.state.title.trim()}”的原有内容` : "保存虚拟配装"
+                  }, this.state.overwrite && !this.state.overwrite.asNew ? "再次点击覆盖" : "保存虚拟配装"))))));
       }
     };
   };
@@ -4166,11 +4206,11 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
         app.VirtualDraft?.clearDraft?.(this.props.owner);
         this.setState({ editor: null, draft: null });
       };
-      saveDraft = async (title, snapshot, asNew = false) => {
+      saveDraft = async (title, snapshot, asNew = false, expected = null) => {
         const { owner } = this.props, editor = this.state.editor;
         if (app.Adapter.cloudContext(false)?.character !== owner) throw Error("角色已变化，请重新打开配装总览。");
         if (editor.entry && !asNew) await app.Virtual.update(owner, editor.entry, title, snapshot);
-        else await app.Virtual.save(owner, title, snapshot);
+        else await app.Virtual.save(owner, title, snapshot, expected);
         app.VirtualDraft?.clearDraft?.(owner);
         if (this.alive) this.setState({ editor: null, draft: null, notice: "", noticeError: false });
         await this.reload();
@@ -5302,17 +5342,27 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
   async function saveNew() {
     const success = await run(async () => {
       const ctx = currentContext(), title = Core.name(mounted.name.value), ui = mounted;
-      const row = await Store.create(ctx, title);
+      let row;
+      try { row = await Store.create(ctx, title, ui.overwrite?.name === title ? ui.overwrite : null); }
+      catch (error) {
+        if (error.code !== "NAME_EXISTS" || mounted !== ui) throw error;
+        ui.overwrite = error.existing;
+        ui.overwriteNote.textContent = `再次点击将覆盖“${title}”的原有内容。`;
+        ui.overwriteNote.hidden = false;
+        return;
+      }
       notify(ctx);
       if (mounted !== ui) return;
       selectedId = row.id;
       diffOpen = false;
       mounted.name.value = "";
       mounted.form.hidden = true;
+      mounted.overwrite = null;
+      mounted.overwriteNote.hidden = true;
       await reload();
       if (mounted === ui) message("");
     });
-    if (success) mounted.add.focus();
+    if (success && mounted.form.hidden) mounted.add.focus();
   }
   function closeImportForm() {
     if (!mounted || mounted.importForm.hidden) return;
@@ -5521,6 +5571,8 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
   }
   function showNew() {
     if (busy || failure) return;
+    mounted.overwrite = null;
+    mounted.overwriteNote.hidden = true;
     mounted.simulatorExportForm.hidden = true;
     setTab("scenes");
     confirmation = null;
@@ -5761,12 +5813,14 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       id: "scene-name", maxlength: "60", autocomplete: "off",
       "aria-label": "新子方案名称", placeholder: "名称（保存当前原生配装）"
     });
-    const save = el("button", "保存", { type: "submit", class: "compact-btn primary" });
+    const save = el("button", "保存", { type: "submit", class: "compact-btn primary", style: "min-width:8em" });
+    const overwriteNote = el("p", "", { class: "muted", role: "status", hidden: "" });
+    name.addEventListener("input", () => { mounted.overwrite = null; overwriteNote.hidden = true; render(); });
     const cancelNew = button("取消", () => { form.hidden = true; mounted.add.focus(); }, { class: "compact-btn ghost-btn" });
     const formRow = el("div", null, { class: "inline-form-row" });
     formRow.append(name, cancelNew, save);
     form.addEventListener("submit", event => { event.preventDefault(); saveNew(); });
-    form.append(formRow);
+    form.append(formRow, overwriteNote);
 
     // Single-player and numbered-party import; only the chosen player is saved.
     const importForm = el("form", null, { class: "editor", hidden: "", "aria-label": "导入配装为子方案" });
@@ -6143,7 +6197,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     mounted = {
       cloud, host, shadow, header, tabScenes, tabCloud, tabCloudDot, paneScenes, paneCloud,
       choices, add, menu, menuContextGroup, menuTargetLabel, menuImportSolo,
-      form, name, save, cancelNew,
+      form, name, save, cancelNew, overwriteNote,
       activeScene, diffToggle, activeDot, activeName, activeSep, summary, diffCaret, stopDirect,
       activeActions, renameDirect, removeDirect, cancelRemove, update, cancelUpdate,
       renameButton, remove, stop, undoButton, manage,
@@ -6268,6 +6322,7 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
     ui.menuImportSolo.hidden = !combat;
 
     ui.save.disabled = ui.add.disabled = busy || Boolean(failure);
+    ui.save.textContent = ui.overwrite ? "再次点击覆盖" : "保存";
     ui.manage.disabled = busy || Boolean(failure);
     for (const node of [ui.importSoloButton, ui.menuImportSolo, ui.importName, ui.importText, ui.importChoice, ui.changeImportMatch, ui.chooseSoloFile, ui.saveImport]) {
       node.disabled = busy || Boolean(failure);
@@ -6485,8 +6540,9 @@ if (typeof GM_xmlhttpRequest === 'function') globalThis.__mwiLoadoutClipboardV2 
       '[data-mwi-scene-change] { position: relative; z-index: 2; outline: 2px solid #ffbe4f !important; outline-offset: 0 !important; border-radius: 6px !important; background: rgba(255, 190, 79, 0.16) !important; box-shadow: 0 0 0 1px rgba(255, 190, 79, 0.48), 0 0 12px rgba(255, 190, 79, 0.36), inset 0 0 10px rgba(255, 190, 79, 0.15) !important; }',
       '[data-mwi-scene-change] [class*="Item_itemContainer__"], [data-mwi-scene-change] [class*="Ability_ability__"] { box-shadow: inset 0 0 0 2px rgba(255, 210, 122, 0.88) !important; }',
       '[data-mwi-scene-target] { position: relative; z-index: 2; outline: 3px solid #70b7ff !important; outline-offset: -3px !important; border-radius: 6px !important; background: rgba(112, 183, 255, 0.2) !important; box-shadow: inset 0 0 0 5px #171822, 0 0 0 2px rgba(112, 183, 255, 0.6), 0 0 14px rgba(112, 183, 255, 0.6) !important; }',
-      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target], [class*="CombatTriggersSetting_combatTriggersEditMenu__"] [data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -1px !important; background: rgba(112, 183, 255, 0.22) !important; box-shadow: 0 0 0 1px rgba(112, 183, 255, 0.55), 0 0 10px rgba(112, 183, 255, 0.45) !important; }',
-      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target] { color: #ffffff !important; font-weight: 600 !important; }',
+      '[class*="CombatTriggersSetting_combatTriggersEditMenu__"] [data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -1px !important; background: rgba(112, 183, 255, 0.22) !important; box-shadow: 0 0 0 1px rgba(112, 183, 255, 0.55), 0 0 10px rgba(112, 183, 255, 0.45) !important; }',
+      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -2px !important; background: #1f4fd6 !important; color: #ffffff !important; font-weight: 600 !important; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24), 0 0 10px rgba(31, 79, 214, 0.45) !important; }',
+      'li[data-mwi-scene-target]:hover, [role="option"][data-mwi-scene-target]:hover { background: #2558e8 !important; color: #ffffff !important; }',
       '[data-mwi-scene-prefilled] { position: relative; z-index: 2; outline: 2px solid #6ad89a !important; outline-offset: -1px !important; border-radius: 6px !important; background: rgba(106, 216, 154, 0.14) !important; box-shadow: 0 0 10px rgba(106, 216, 154, 0.34) !important; }',
       '[data-mwi-picker-guide], [data-mwi-trigger-guide] { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #141826; border: 1px solid rgba(112, 183, 255, 0.38); border-left: 3px solid #70b7ff; color: #eef0f8; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; text-align: left; }',
       '[data-mwi-picker-guide][data-state="warn"], [data-mwi-trigger-guide][data-state="warn"] { border-color: rgba(242, 196, 109, 0.45); border-left-color: #f2c46d; color: #ffe3a8; }',

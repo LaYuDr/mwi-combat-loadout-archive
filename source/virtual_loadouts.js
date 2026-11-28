@@ -97,12 +97,28 @@
     })().finally(() => pending.delete(entry.key));
     pending.set(entry.key, task); return task;
   }
-  function save(character, title, snapshot) {
+  function save(character, title, snapshot, expected) {
     const validated = app.Core.validateSnapshot(snapshot), scope = owner(character);
     const row = { key: scope + "|" + crypto.randomUUID(), token: crypto.randomUUID(), owner: scope,
       board: null, scenes: [{ id: crypto.randomUUID(), name: app.Core.name(title), snapshot: validated }],
       checked: Date.now(), error: "" };
-    return transaction(scope, "readwrite", (_, store) => { store.add(row); return row; });
+    return transaction(scope, "readwrite", (rows, store) => {
+      // Only the interactive create flow opts into same-name replacement.
+      if (expected !== undefined) {
+        const matches = rows.filter(old => !old.board && old.scenes[0]?.name === row.scenes[0].name);
+        if (matches.length > 1) throw Error("有多个同名虚拟配装，请换个名称或打开指定配装编辑。");
+        const before = matches[0];
+        if (before) {
+          if (!expected || expected.key !== before.key || expected.token !== before.token ||
+              app.Core.stable(expected.scenes) !== app.Core.stable(before.scenes))
+            throw Object.assign(Error(`再次点击将覆盖“${row.scenes[0].name}”。`), { code: "NAME_EXISTS", existing: before });
+          const updated = { ...before, checked: Date.now(), scenes: [{ ...before.scenes[0], snapshot: validated }] };
+          store.put(updated); return updated;
+        }
+        if (expected) throw Error("待覆盖的虚拟配装已变化，请重新保存。");
+      }
+      store.add(row); return row;
+    });
   }
   function remove(character, entry) {
     return transaction(owner(character), "readwrite", (rows, store) => {

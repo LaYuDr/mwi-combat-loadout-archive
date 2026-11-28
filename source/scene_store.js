@@ -56,10 +56,20 @@
     return { id: crypto.randomUUID(), scope: ctx.scope, owner: ctx.owner, parentId: raw.id,
       name: Core().name(title), snapshot: Core().snapshot(raw), revision: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now(), removedAt: null };
   }
-  async function create(ctx, title) {
+  async function create(ctx, title, expected = null) {
     const row = record(ctx, title, ctx.raw);
     return transaction(ctx.scope, "readwrite", (rows, store) => {
-      unique(rows, row.name); store.add(row); return row;
+      const matches = rows.filter(old => !old.removedAt && old.name === row.name);
+      if (matches.length > 1) throw Error("有多个同名子方案，请先改名后再保存。");
+      const before = matches[0];
+      if (before) {
+        if (!expected || expected.id !== before.id || expected.revision !== before.revision)
+          throw Object.assign(Error(`再次点击将覆盖“${row.name}”。`), { code: "NAME_EXISTS", existing: before });
+        const updated = { ...revise(before), snapshot: row.snapshot };
+        store.put(updated); return updated;
+      }
+      if (expected) throw Error("待覆盖的子方案已变化，请重新保存。");
+      store.add(row); return row;
     });
   }
   function revise(before) {

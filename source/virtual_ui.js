@@ -376,11 +376,11 @@
         app.VirtualDraft?.clearDraft?.(this.props.owner);
         this.setState({ editor: null, draft: null });
       };
-      saveDraft = async (title, snapshot, asNew = false) => {
+      saveDraft = async (title, snapshot, asNew = false, expected = null) => {
         const { owner } = this.props, editor = this.state.editor;
         if (app.Adapter.cloudContext(false)?.character !== owner) throw Error("角色已变化，请重新打开配装总览。");
         if (editor.entry && !asNew) await app.Virtual.update(owner, editor.entry, title, snapshot);
-        else await app.Virtual.save(owner, title, snapshot);
+        else await app.Virtual.save(owner, title, snapshot, expected);
         app.VirtualDraft?.clearDraft?.(owner);
         if (this.alive) this.setState({ editor: null, draft: null, notice: "", noticeError: false });
         await this.reload();

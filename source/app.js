@@ -160,17 +160,27 @@
   async function saveNew() {
     const success = await run(async () => {
       const ctx = currentContext(), title = Core.name(mounted.name.value), ui = mounted;
-      const row = await Store.create(ctx, title);
+      let row;
+      try { row = await Store.create(ctx, title, ui.overwrite?.name === title ? ui.overwrite : null); }
+      catch (error) {
+        if (error.code !== "NAME_EXISTS" || mounted !== ui) throw error;
+        ui.overwrite = error.existing;
+        ui.overwriteNote.textContent = `再次点击将覆盖“${title}”的原有内容。`;
+        ui.overwriteNote.hidden = false;
+        return;
+      }
       notify(ctx);
       if (mounted !== ui) return;
       selectedId = row.id;
       diffOpen = false;
       mounted.name.value = "";
       mounted.form.hidden = true;
+      mounted.overwrite = null;
+      mounted.overwriteNote.hidden = true;
       await reload();
       if (mounted === ui) message("");
     });
-    if (success) mounted.add.focus();
+    if (success && mounted.form.hidden) mounted.add.focus();
   }
   function closeImportForm() {
     if (!mounted || mounted.importForm.hidden) return;
@@ -379,6 +389,8 @@
   }
   function showNew() {
     if (busy || failure) return;
+    mounted.overwrite = null;
+    mounted.overwriteNote.hidden = true;
     mounted.simulatorExportForm.hidden = true;
     setTab("scenes");
     confirmation = null;
@@ -619,12 +631,14 @@
       id: "scene-name", maxlength: "60", autocomplete: "off",
       "aria-label": "新子方案名称", placeholder: "名称（保存当前原生配装）"
     });
-    const save = el("button", "保存", { type: "submit", class: "compact-btn primary" });
+    const save = el("button", "保存", { type: "submit", class: "compact-btn primary", style: "min-width:8em" });
+    const overwriteNote = el("p", "", { class: "muted", role: "status", hidden: "" });
+    name.addEventListener("input", () => { mounted.overwrite = null; overwriteNote.hidden = true; render(); });
     const cancelNew = button("取消", () => { form.hidden = true; mounted.add.focus(); }, { class: "compact-btn ghost-btn" });
     const formRow = el("div", null, { class: "inline-form-row" });
     formRow.append(name, cancelNew, save);
     form.addEventListener("submit", event => { event.preventDefault(); saveNew(); });
-    form.append(formRow);
+    form.append(formRow, overwriteNote);
 
     // Single-player and numbered-party import; only the chosen player is saved.
     const importForm = el("form", null, { class: "editor", hidden: "", "aria-label": "导入配装为子方案" });
@@ -1001,7 +1015,7 @@
     mounted = {
       cloud, host, shadow, header, tabScenes, tabCloud, tabCloudDot, paneScenes, paneCloud,
       choices, add, menu, menuContextGroup, menuTargetLabel, menuImportSolo,
-      form, name, save, cancelNew,
+      form, name, save, cancelNew, overwriteNote,
       activeScene, diffToggle, activeDot, activeName, activeSep, summary, diffCaret, stopDirect,
       activeActions, renameDirect, removeDirect, cancelRemove, update, cancelUpdate,
       renameButton, remove, stop, undoButton, manage,
@@ -1126,6 +1140,7 @@
     ui.menuImportSolo.hidden = !combat;
 
     ui.save.disabled = ui.add.disabled = busy || Boolean(failure);
+    ui.save.textContent = ui.overwrite ? "再次点击覆盖" : "保存";
     ui.manage.disabled = busy || Boolean(failure);
     for (const node of [ui.importSoloButton, ui.menuImportSolo, ui.importName, ui.importText, ui.importChoice, ui.changeImportMatch, ui.chooseSoloFile, ui.saveImport]) {
       node.disabled = busy || Boolean(failure);
@@ -1343,8 +1358,9 @@
       '[data-mwi-scene-change] { position: relative; z-index: 2; outline: 2px solid #ffbe4f !important; outline-offset: 0 !important; border-radius: 6px !important; background: rgba(255, 190, 79, 0.16) !important; box-shadow: 0 0 0 1px rgba(255, 190, 79, 0.48), 0 0 12px rgba(255, 190, 79, 0.36), inset 0 0 10px rgba(255, 190, 79, 0.15) !important; }',
       '[data-mwi-scene-change] [class*="Item_itemContainer__"], [data-mwi-scene-change] [class*="Ability_ability__"] { box-shadow: inset 0 0 0 2px rgba(255, 210, 122, 0.88) !important; }',
       '[data-mwi-scene-target] { position: relative; z-index: 2; outline: 3px solid #70b7ff !important; outline-offset: -3px !important; border-radius: 6px !important; background: rgba(112, 183, 255, 0.2) !important; box-shadow: inset 0 0 0 5px #171822, 0 0 0 2px rgba(112, 183, 255, 0.6), 0 0 14px rgba(112, 183, 255, 0.6) !important; }',
-      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target], [class*="CombatTriggersSetting_combatTriggersEditMenu__"] [data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -1px !important; background: rgba(112, 183, 255, 0.22) !important; box-shadow: 0 0 0 1px rgba(112, 183, 255, 0.55), 0 0 10px rgba(112, 183, 255, 0.45) !important; }',
-      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target] { color: #ffffff !important; font-weight: 600 !important; }',
+      '[class*="CombatTriggersSetting_combatTriggersEditMenu__"] [data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -1px !important; background: rgba(112, 183, 255, 0.22) !important; box-shadow: 0 0 0 1px rgba(112, 183, 255, 0.55), 0 0 10px rgba(112, 183, 255, 0.45) !important; }',
+      'li[data-mwi-scene-target], [role="option"][data-mwi-scene-target] { outline: 2px solid #70b7ff !important; outline-offset: -2px !important; background: #1f4fd6 !important; color: #ffffff !important; font-weight: 600 !important; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24), 0 0 10px rgba(31, 79, 214, 0.45) !important; }',
+      'li[data-mwi-scene-target]:hover, [role="option"][data-mwi-scene-target]:hover { background: #2558e8 !important; color: #ffffff !important; }',
       '[data-mwi-scene-prefilled] { position: relative; z-index: 2; outline: 2px solid #6ad89a !important; outline-offset: -1px !important; border-radius: 6px !important; background: rgba(106, 216, 154, 0.14) !important; box-shadow: 0 0 10px rgba(106, 216, 154, 0.34) !important; }',
       '[data-mwi-picker-guide], [data-mwi-trigger-guide] { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #141826; border: 1px solid rgba(112, 183, 255, 0.38); border-left: 3px solid #70b7ff; color: #eef0f8; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; text-align: left; }',
       '[data-mwi-picker-guide][data-state="warn"], [data-mwi-trigger-guide][data-state="warn"] { border-color: rgba(242, 196, 109, 0.45); border-left-color: #f2c46d; color: #ffe3a8; }',

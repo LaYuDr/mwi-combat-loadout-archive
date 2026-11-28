@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         A配装助手 开发加载器
 // @namespace    https://mwi-combatsi-mulator.pages.dev/loadout-archive/dev
-// @version      0.2.15
+// @version      0.2.16
 // @author       柆雨
 // @homepageURL  https://github.com/LaYuDr/mwi-combat-loadout-archive
 // @supportURL   https://github.com/LaYuDr/mwi-combat-loadout-archive/issues

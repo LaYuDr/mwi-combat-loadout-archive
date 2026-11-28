@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.16] - 2026-11-28
+
+### Changed
+
+- 新建子方案与虚拟配装遇到同名时，原位再次点击确认覆盖；保留原记录身份并校验并发修改，优化条件候选高亮。
+
 ## [0.2.15] - 2026-11-26
 
 ### Changed
